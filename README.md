@@ -1,7 +1,7 @@
 # AEGIS
 **Fire Emergency Response & Navigation System**
 
-Welcome to the official repository for **AEGIS**, a digital simulation dashboard developed to support our Computer Science thesis: 
+Welcome to the official repository for **AEGIS**, a digital simulation system developed to support our Computer Science thesis: 
 > *"Enhancement in Multi-Tier Heterogeneous Scout-Ant Ant Colony Optimization Algorithm Applied in Fire Emergency Response in Informal Settlements."*
 
 ### Developers
