@@ -1,12 +1,20 @@
 # AEGIS
-A system for our thesis on enhancing the ACO algorithm. Developers are Aliyah Segovia and Maverick Verdida.
+**Fire Emergency Response & Navigation System**
 
-Use PyCharm as the IDE
+Welcome to the official repository for **AEGIS**, a digital simulation dashboard developed to support our Computer Science thesis: 
+> *"Enhancement in Multi-Tier Heterogeneous Scout-Ant Ant Colony Optimization Algorithm Applied in Fire Emergency Response in Informal Settlements."*
 
-Run the following command in your terminal to install the required Streamlit package:
+### Developers
+* **Aliyah Segovia**
+* **Maverick Verdida**
+
+---
+
+### ⚙️ Development Environment
+To ensure full compatibility with the high-frequency topological updates and data processing libraries used in this system, we highly recommend using **PyCharm** (Professional or Community Edition) as your primary IDE[cite: 1].
+
+### 📦 Installation
+Run the following command in your terminal to install the required Streamlit package for the dashboard interface:
+
+```bash
 pip install streamlit
-or
-python -m pip install streamlit
-
-To run the code:
-streamlit run app.py
