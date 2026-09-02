@@ -10,11 +10,16 @@ Welcome to the official repository for **AEGIS**, a digital simulation dashboard
 
 ---
 
-### ⚙️ Development Environment
-To ensure full compatibility with the high-frequency topological updates and data processing libraries used in this system, we highly recommend using **PyCharm** (Professional or Community Edition) as your primary IDE[cite: 1].
+### Development Environment
+To ensure full compatibility with the high-frequency topological updates and data processing libraries used in this system, we highly recommend using **PyCharm** (Professional or Community Edition) as your primary IDE.
 
-### 📦 Installation
+### Installation
 Run the following command in your terminal to install the required Streamlit package for the dashboard interface:
 
 ```bash
 pip install streamlit
+
+### Running the Simulation
+
+```bash
+streamlit run app.py
