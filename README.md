@@ -19,7 +19,5 @@ Run the following command in your terminal to install the required Streamlit pac
 ```bash
 pip install streamlit
 
-### Running the Simulation
-
-```bash
+To run the simulation: 
 streamlit run app.py
