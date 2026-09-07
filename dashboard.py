@@ -450,4 +450,4 @@ def render_dashboard():
                     st.selectbox("Pmax", options_0_to_1)
 
                 st.slider("Scout Agents", min_value=50, max_value=500, value=50)
-                st.slider("Carrier Agents", min_value=1, max_value=10, value=1)
+                st.slider("Carrier Agents", min_value=1, max_value=30, value=1)
