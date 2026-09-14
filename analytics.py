@@ -1,8 +1,9 @@
 import streamlit as st
 
-# Placeholder simulation results. Once the backend is wired up, populate
-# st.session_state['sim_results'] with real values using these exact keys —
-# nothing else in this file needs to change.
+# Placeholder simulation results, used only as a fallback when this screen
+# is opened directly (no simulation has actually been run yet this
+# session). Once a real run's results exist in st.session_state["aco_results"],
+# _build_results() below converts them into this exact shape.
 DEFAULT_RESULTS = {
     "total_transit_time": "6 min and 39 sec",
     "bfp_benchmark_time": "9 min and 40 sec",
@@ -23,6 +24,60 @@ DEFAULT_RESULTS = {
     "route_hazard_score": "Low",
     "vehicle_entrapment_risk": "None",
 }
+
+# BFP's stated average dispatch benchmark, used as the comparison baseline
+# for both the callout banner and the transit-time progress bars.
+BFP_BENCHMARK_SECONDS = 4.5 * 60
+
+
+def _format_transit(seconds):
+    m, s = int(seconds // 60), round(seconds % 60)
+    return f"{m} min and {s} sec"
+
+
+def _build_results(aco_results):
+    """Converts a raw run_full_simulation() results dict (as stored in
+    st.session_state["aco_results"] by dashboard.py) into the display shape
+    this page renders. This used to live inline in dashboard.py's "Show
+    Analytics" button handler -- moved here so this page owns its own data,
+    and dashboard.py only has to navigate to it."""
+    sim_seconds = aco_results["eta_seconds"]
+    pct_diff = round(100 * (BFP_BENCHMARK_SECONDS - sim_seconds) / BFP_BENCHMARK_SECONDS)
+    callout = (
+        f"{pct_diff}% faster than the BFP benchmark."
+        if pct_diff >= 0 else
+        f"{abs(pct_diff)}% slower than the BFP benchmark."
+    )
+    # edges_blocked_last_iter is fire-caused blocks only (random hazards are
+    # counted separately in num_random_hazards) -- summing them here gives
+    # the total distinct obstacles the run had to deal with, fire and
+    # debris combined, without double-counting either.
+    num_hazards_known = aco_results["num_random_hazards"] + aco_results["edges_blocked_last_iter"]
+
+    risk_pct = aco_results["avg_risk_pct"] or 0
+    hazard_score = "Low" if risk_pct < 33 else ("Moderate" if risk_pct < 66 else "High")
+
+    if aco_results["carrier_successes"] == aco_results["num_carriers"]:
+        entrapment_risk = "None"
+    elif aco_results["carrier_successes"] > 0:
+        entrapment_risk = "Moderate"
+    else:
+        entrapment_risk = "High"
+
+    return {
+        "total_transit_time": _format_transit(sim_seconds),
+        "bfp_benchmark_time": _format_transit(BFP_BENCHMARK_SECONDS),
+        "callout_text": callout,
+        "this_sim_pct": max(2, min(100, round(100 * sim_seconds / BFP_BENCHMARK_SECONDS))),
+        "bfp_benchmark_pct": 100,
+        "path_distance_pct": aco_results["avg_distance_pct"] or 0,
+        "path_complexity_pct": aco_results["avg_complexity_pct"] or 0,
+        "structural_risk_pct": aco_results["avg_risk_pct"] or 0,
+        "nodes_visited": f"{len(aco_results['best_route'])}/{len(aco_results['best_route'])}",
+        "hazards_bypassed": str(num_hazards_known),
+        "route_hazard_score": hazard_score,
+        "vehicle_entrapment_risk": entrapment_risk,
+    }
 
 
 def _progress_bar(fill_pct, fill_color, track_color="#FFFFFF", height="10px"):
@@ -229,9 +284,13 @@ def render_dispatch_analytics():
         st.rerun()
 
     # --- DATA ---
-    # Pulls whatever the Dashboard stored when "Show Analytics" was pressed.
-    # Falls back to placeholder values if this screen is opened directly.
-    results = st.session_state.get("sim_results", DEFAULT_RESULTS)
+    # Builds its own display data from the raw simulation output
+    # (st.session_state["aco_results"], set by dashboard.py's Run button) --
+    # this page no longer depends on dashboard.py having pre-converted
+    # anything. Falls back to placeholder values if opened directly, or if
+    # no successful run exists yet this session.
+    aco_results = st.session_state.get("aco_results")
+    results = _build_results(aco_results) if aco_results and aco_results.get("success") else DEFAULT_RESULTS
 
     # --- TITLE ---
     st.markdown('<div class="analytics-title">DISPATCH ANALYTICS</div>', unsafe_allow_html=True)
