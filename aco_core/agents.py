@@ -4,7 +4,7 @@ sequence for when live conditions have escalated since verification.
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .hazard import HazardTier, HazardReading
 from .verification import VerificationTracker
