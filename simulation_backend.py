@@ -427,11 +427,28 @@ def run_full_simulation(
 
     carrier_successes = 0
     if top_routes:
+        # Ranked best-first (shortest first). Carriers always prefer the
+        # best still-passable verified path. Once any carrier discovers a
+        # path is impassable it is marked in the shared set; subsequent
+        # carriers skip it and take the next verified path instead of
+        # continuing to burn allocation on a known-dead route.
         carrier_route_rank_list = [r["route"] for r in top_routes]
-        n_ranks = len(carrier_route_rank_list)
+        impassable_routes: set = set()
+
+        def pick_best_available_route():
+            """Return (route, rank_index) for the shortest path not yet
+            known to be impassable. Falls back to the absolute best path
+            if every verified route has already been marked impassable
+            (individual carriers will still try mid-route fallback)."""
+            for idx, route in enumerate(carrier_route_rank_list):
+                if tuple(route) not in impassable_routes:
+                    return route, idx
+            # All known paths flagged impassable -- still send on rank 0
+            # so the per-carrier fallback logic can attempt alternatives.
+            return carrier_route_rank_list[0], 0
+
         for i in range(num_carriers):
-            rank = (i // 3) % n_ranks
-            assigned_route = carrier_route_rank_list[rank]
+            assigned_route, rank = pick_best_available_route()
             carrier = Carrier(
                 carrier_id=f"C{i + 1}",
                 current_node=assigned_route[0],
@@ -439,6 +456,7 @@ def run_full_simulation(
                 route_rank_list=carrier_route_rank_list,
                 hazard_lookup=carrier_hazard_lookup_factory(),
                 hazard_threshold=HazardTier.IMPASSABLE,
+                impassable_routes=impassable_routes,
             )
             total_steps = len(assigned_route) + 5
 
@@ -456,6 +474,12 @@ def run_full_simulation(
                     succeeded = True
                     break
                 result = carrier.next_step(tracker, pheromone)
+                # After each step, re-resolve rank in case the carrier
+                # switched routes via fallback (so the UI stays accurate).
+                try:
+                    rank = carrier_route_rank_list.index(carrier.committed_route)
+                except ValueError:
+                    pass
                 if carrier_progress_callback is not None:
                     carrier_progress_callback(
                         carrier_id=carrier.carrier_id, carrier_number=i + 1, num_carriers=num_carriers,

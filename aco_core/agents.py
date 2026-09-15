@@ -48,8 +48,17 @@ class Carrier:
     hazard_lookup: Callable[[Edge], HazardReading]
     hazard_threshold: HazardTier = HazardTier.MODERATE
     emergency_decay: float = 0.1
+    # Shared across carriers so that once a route is found impassable,
+    # later carriers skip it entirely instead of still being assigned to it.
+    impassable_routes: Optional[Set[Tuple[str, ...]]] = None
 
     _route_index: int = field(default=0, init=False)
+    _committed_key: Optional[Tuple[str, ...]] = field(default=None, init=False)
+
+    def __post_init__(self):
+        self._committed_key = tuple(self.committed_route)
+        if self.impassable_routes is None:
+            self.impassable_routes = set()
 
     def _recheck_edge(self, edge: Edge) -> HazardReading:
         return self.hazard_lookup(edge)
@@ -57,14 +66,6 @@ class Carrier:
     def next_step(
         self, tracker: VerificationTracker, pheromone: Dict[Edge, float]
     ) -> Optional[str]:
-        """
-        Advance one step along the committed route. If the next edge has
-        escalated past the hazard threshold since it was verified,
-        trigger the fallback sequence instead of proceeding blindly.
-
-        Returns the new current_node, or None if blocked with no
-        verified fallback available.
-        """
         if self._route_index >= len(self.committed_route) - 1:
             return None
 
@@ -82,22 +83,30 @@ class Carrier:
     def _handle_blocked_edge(
         self, edge: Edge, pheromone: Dict[Edge, float], tracker: VerificationTracker
     ) -> Optional[str]:
-        # 1. Immediate penalty
+        # 1. Immediate penalty on the blocked edge
         if edge in pheromone:
             pheromone[edge] *= self.emergency_decay
 
-        # 2. Fall back to the next-best ALREADY-VERIFIED route
+        # Mark the currently committed route as impassable so subsequent
+        # carriers are not assigned to it
+        if self._committed_key is not None:
+            self.impassable_routes.add(self._committed_key)
+
+        # 2. Fall back to the next-best ALREADY-VERIFIED route that is
+        #    not already known to be impassable
         for candidate in self.route_rank_list:
+            cand_key = tuple(candidate)
+            if cand_key in self.impassable_routes:
+                continue
             if self.current_node not in candidate:
                 continue
             start = candidate.index(self.current_node)
             remaining = candidate[start:]
             if tracker.is_route_verified(remaining):
                 self.committed_route = candidate
+                self._committed_key = cand_key
                 self._route_index = start
                 return self.current_node
 
-        # 3. No verified alternative -- signal that a local rescout
-        #    is needed. The simulation loop should dispatch 1-2 Scouts
-        #    to probe just the neighboring edges, not restart everything.
+        # 3. No verified alternative
         return None
