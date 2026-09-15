@@ -1,0 +1,5 @@
+metric,mean,std,min,max,n_success
+eta_seconds,55.36751999999999,6.273519281015157,48.48192,65.4768,30
+best_length_m,384.4966666666668,43.566106118160825,336.68,454.7,30
+num_verified_routes,1.0,0.0,1.0,1.0,30
+carrier_success_rate,100.0,0.0,100.0,100.0,30
