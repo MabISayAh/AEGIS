@@ -32,12 +32,13 @@ class VerificationTracker:
     One EdgeVerification per edge, plus the f_min threshold Carriers
     require before they'll trust a route.
 
-    f_min defaults to 30% of the Scout population -- tune this in
-    your experiments section as one of your parameters.
+    f_min defaults to 5% of the Scout population (Tc = 0.05 * ms, per the
+    algorithm's confidence threshold) -- tune this in your experiments
+    section as one of your parameters.
     """
 
     def __init__(self, scout_population: int, window_size: int = 10,
-                 min_fraction: float = 0.3):
+                 min_fraction: float = 0.05):
         self.window_size = window_size
         self.f_min = max(1, round(min_fraction * scout_population))
         self._edges: Dict[Edge, EdgeVerification] = {}

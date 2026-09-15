@@ -6,11 +6,15 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 from simulation_backend import (
-    run_full_simulation, FIRETRUCK_SPEED_KMH, FIRE_STATION_LAT, FIRE_STATION_LON, latlon_to_utm,
+    run_full_simulation, FIRETRUCK_SPEED_KMH, FIRETRUCK_SPEED_MPS, FIRE_STATION_LAT, FIRE_STATION_LON, latlon_to_utm,
     load_graph, build_adjacency, build_edge_lookup, get_largest_component_nodes,
     nearest_node, compute_baseline_corridor_edges, pick_random_hazard_edges,
 )
-from plotting import plot_graph_with_route, plot_preview, plot_iteration_progress
+from plotting import (
+    plot_graph_with_route, plot_preview, plot_scout_progress,
+    create_scout_canvas, update_scout_frame,
+    create_carrier_canvas, update_carrier_frame,
+)
 
 GRAPH_FILE = "baseco_osm_graph_scored.json"
 STATION_X, STATION_Y = latlon_to_utm(FIRE_STATION_LAT, FIRE_STATION_LON)
@@ -191,19 +195,6 @@ def render_dashboard():
         align-items: center;
     }
 
-    .help-icon {
-        color: #3E3F49;
-        font-size: 14px;
-        border: 1px solid #3E3F49;
-        border-radius: 50%;
-        width: 18px;
-        height: 18px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-    }
-
     .panel-body {
         padding: 15px;
         background-color: #E4E5F1;
@@ -295,7 +286,7 @@ def render_dashboard():
     .st-key-canvas_wrapper img {
         height: 100%;
         width: 100% !important;
-        object-fit: cover;
+        object-fit: contain;
         object-position: center;
     }
     /* Custom "Scouts exploring the network..." overlay, replacing
@@ -339,7 +330,7 @@ def render_dashboard():
     /* Simulation Controls block, now stacked in the (narrower) left column
        instead of a horizontal row above the canvas. */
     .st-key-sim_controls_group {
-        margin-bottom: 15px;
+        margin-bottom: 0;
     }
     .st-key-sim_controls_group .control-label-box {
         background-color: #EAEBF3;
@@ -349,7 +340,7 @@ def render_dashboard():
         display: flex;
         align-items: center;
         box-shadow: 0px 2px 2px rgba(0, 0, 0, 0.15);
-        margin-bottom: 8px;
+        margin-bottom: 15px;
     }
 
     /* Bottom Control Bar */
@@ -433,17 +424,6 @@ def render_dashboard():
        are a fallback in case a given element reads a hard-coded color instead. */
     :root {
         --primary-color: #477B9E;
-    }
-
-    /* Selectbox border, including on focus/open (this is usually where the
-       red/orange outline shows up) */
-    div[data-testid="stSelectbox"] > div > div {
-        border-color: #D1D5E0 !important;
-    }
-    div[data-testid="stSelectbox"] > div > div:focus-within,
-    div[data-baseweb="select"] > div:focus-within {
-        border-color: #477B9E !important;
-        box-shadow: 0 0 0 1px #477B9E !important;
     }
 
     /* Slider track (the thin bar) and its filled portion */
@@ -566,38 +546,50 @@ def render_dashboard():
         with st.container(key="params_group"):
             st.markdown("""
             <div class="panel-header" style="border: 1px solid #D1D5E0; border-radius: 6px 6px 0 0; border-bottom: none;">
-                Parameters <span class="help-icon">?</span>
+                Parameters
             </div>
             """, unsafe_allow_html=True)
 
             with st.container(key="params_panel"):
                 options_0_to_1 = ["0.0", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "1.0"]
 
-                dist_w = float(st.selectbox("Distance (D)", options_0_to_1, index=4))
-                complexity_w = float(st.selectbox("Path Complexity (C)", options_0_to_1, index=3))
-                risk_w = float(st.selectbox("Structural Risk (R)", options_0_to_1, index=3))
+                # Every widget below now has an EXPLICIT key. Without one,
+                # Streamlit auto-generates a key based on position/args, which
+                # is NOT reliably preserved across our custom session_state
+                # page-router (Dashboard -> Analytics -> Dashboard) -- since
+                # these widgets simply don't execute at all while the
+                # Analytics page is showing, an unkeyed widget can silently
+                # snap back to its hardcoded default on return, which then
+                # made result_matches_sliders go False and the canvas fall
+                # back to an empty preview instead of the real results.
+                dist_w = float(st.selectbox("Distance [D]", options_0_to_1, index=4, key="dist_w_select"))
+                complexity_w = float(st.selectbox("Path Complexity [C]", options_0_to_1, index=3, key="complexity_w_select"))
+                # Escaping the (R) so Streamlit doesn't render it as a trademark symbol
+                risk_w = float(st.selectbox("Structural Risk [R]", options_0_to_1, index=3, key="risk_w_select"))
 
                 p_col1, p_col2 = st.columns(2)
                 with p_col1:
-                    pmin_w = float(st.selectbox("Pmin", options_0_to_1, index=1))
+                    pmin_w = float(st.selectbox("Pmin", options_0_to_1, index=1, key="pmin_w_select"))
                 with p_col2:
-                    pmax_w = float(st.selectbox("Pmax", options_0_to_1, index=9))
+                    pmax_w = float(st.selectbox("Pmax", options_0_to_1, index=9, key="pmax_w_select"))
 
-                scout_agents = st.slider("Scout Agents", min_value=50, max_value=500, value=50)
-                carrier_agents = st.slider("Carrier Agents", min_value=1, max_value=30, value=1)
+                # Scout max unchanged, min raised to 100
+                scout_agents = st.slider("Scout Agents", min_value=100, max_value=500, value=100, key="scout_agents_slider")
+                # Carrier max constrained to 10
+                carrier_agents = st.slider("Carrier Agents", min_value=1, max_value=10, value=1, key="carrier_agents_slider")
 
                 st.markdown('<div class="metric-label" style="margin-top:8px;">Fire Simulation</div>', unsafe_allow_html=True)
-                enable_fire = st.checkbox("Enable fire hazard", value=True)
-                fire_x_pct = st.slider("Fire Origin X (%)", 0, 100, 50, disabled=not enable_fire)
-                fire_y_pct = st.slider("Fire Origin Y (%)", 0, 100, 50, disabled=not enable_fire)
+                enable_fire = st.checkbox("Enable fire hazard", value=True, key="enable_fire_checkbox")
+                fire_x_pct = st.slider("Fire Origin X (%)", 0, 100, 50, disabled=not enable_fire, key="fire_x_pct_slider")
+                fire_y_pct = st.slider("Fire Origin Y (%)", 0, 100, 50, disabled=not enable_fire, key="fire_y_pct_slider")
                 spread_rate_m_per_min = st.slider(
-                    "Fire Spread Rate (m/min)", 0.1, 5.0, 1.0, step=0.1, disabled=not enable_fire
+                    "Fire Spread Rate (m/min)", 0.1, 5.0, 1.0, step=0.1, disabled=not enable_fire, key="spread_rate_slider"
                 )
 
                 st.markdown('<div class="metric-label" style="margin-top:8px;">Random Hazards</div>', unsafe_allow_html=True)
-                enable_random_hazards = st.checkbox("Enable random hazards (debris / collapsed structures)", value=False)
+                enable_random_hazards = st.checkbox("Enable random hazards (debris / collapsed structures)", value=False, key="enable_random_hazards_checkbox")
                 num_random_hazards = st.slider(
-                    "Number of random hazards", 0, 15, 5, disabled=not enable_random_hazards
+                    "Number of random hazards", 0, 15, 5, disabled=not enable_random_hazards, key="num_random_hazards_slider"
                 )
                 # Stable across reruns (so the preview doesn't flicker every
                 # time a slider moves) until the user explicitly shuffles, or
@@ -660,11 +652,122 @@ def render_dashboard():
                 w1, w2, w3 = dist_w / weight_sum, risk_w / weight_sum, complexity_w / weight_sum
                 nodes_for_anim, edges_for_anim = load_graph_for_preview(GRAPH_FILE)
 
-                def on_iteration(iteration, num_iterations, scout_routes, best_route):
+                # start/target aren't known until run_full_simulation picks
+                # them (fixed fire-station start, nearest-node-to-fire
+                # target) -- stash them the first time the callback fires
+                # so every subsequent frame can still draw the markers.
+                #
+                # The base graph (every road edge) is drawn ONCE here via
+                # create_scout_canvas, and every frame afterward reuses the
+                # same fig/ax via update_scout_frame -- which only touches
+                # the handful of artists that actually change (routes,
+                # markers, title, legend). That's what makes it cheap
+                # enough to render every single Scout, not just some.
+                anim_fig, anim_ax, anim_base_handles = create_scout_canvas(nodes_for_anim, edges_for_anim)
+                anim_state = {"start_node": None, "target_node": None, "dynamic_artists": None}
+
+                # Live stopwatch: starts now (Scout phase kickoff) and keeps
+                # climbing every frame -- Scout AND Carrier -- until the
+                # FIRST Carrier to reach the target fires its "reached"
+                # callback, at which point it freezes for good. Later
+                # Carriers still arriving (or failing) after that don't
+                # move it anymore.
+                # SIMULATED elapsed time, not real wall-clock time. Scouts add a
+                # small fixed amount per agent (so displaying up to 500 Scouts
+                # stays fast/meaningful regardless of real render time), and
+                # Carriers add real travel time computed from actual distance
+                # covered at the fixed firetruck speed -- the same formula the
+                # ETA metric uses -- so a Carrier that completes its route shows
+                # a timer value that matches that route's ETA exactly.
+                timer_state = {"simulated_elapsed_s": 0.0, "frozen_at": None}
+                SCOUT_TIMER_INCREMENT_S = 0.002  # 2ms of simulated time per Scout
+
+                def tick_timer(delta_s):
+                    if timer_state["frozen_at"] is not None:
+                        return
+                    timer_state["simulated_elapsed_s"] += delta_s
+                    render_timer(timer_slot, timer_state["simulated_elapsed_s"])
+
+                def on_scout(scout_number, num_scouts, scout_route, scout_status,
+                             scout_traversed_edges, verified_routes, best_route):
+                    if scout_route and anim_state["start_node"] is None:
+                        anim_state["start_node"] = scout_route[0]
+                        anim_state["target_node"] = scout_route[-1]
+                    loading_slot.markdown(
+                        f'<div class="running-overlay"><span class="running-dot"></span>'
+                        f'Scout {scout_number}/{num_scouts} exploring the network... '
+                        f'({len(verified_routes)}/3 paths verified)</div>',
+                        unsafe_allow_html=True,
+                    )
+                    anim_state["dynamic_artists"] = update_scout_frame(
+                        anim_fig, anim_ax, anim_base_handles, nodes_for_anim,
+                        scout_number, num_scouts,
+                        scout_route, verified_routes, best_route,
+                        start_node=anim_state["start_node"],
+                        target_node=anim_state["target_node"],
+                        scout_status=scout_status,
+                        dynamic_artists=anim_state["dynamic_artists"],
+                    )
                     with canvas_slot.container():
-                        fig = plot_iteration_progress(nodes_for_anim, edges_for_anim, iteration, num_iterations, scout_routes, best_route)
-                        st.pyplot(fig, width='stretch'); plt.close(fig)
-                    time.sleep(0.12)  # small pause per iteration so the animation is actually visible
+                        st.pyplot(anim_fig, width='stretch')
+                    tick_timer(SCOUT_TIMER_INCREMENT_S)
+                    time.sleep(0.005)  # small pause per Scout so the animation is actually visible
+
+                # Carrier phase reuses the Scout phase's start/target (both
+                # fixed -- Fire Station and nearest-node-to-fire) but gets
+                # its OWN canvas/fig, so the Scout swarm's final frame stays
+                # on screen as the last thing painted before Carriers take
+                # over, instead of the two phases fighting over one canvas.
+                carrier_fig, carrier_ax, carrier_base_handles = create_carrier_canvas(nodes_for_anim, edges_for_anim)
+                carrier_anim_state = {"dynamic_artists": None}
+
+                # Edge-distance lookup, reused to compute each Carrier's real
+                # cumulative distance traveled along ITS committed route --
+                # same lookup shape run_full_simulation builds internally.
+                _, carrier_edge_lookup, _ = load_graph_structures(GRAPH_FILE)
+
+                def on_carrier(carrier_id, carrier_number, num_carriers, rank, route,
+                                current_node, step, total_steps, status,
+                                carriers_completed, top_routes):
+                    loading_slot.markdown(
+                        f'<div class="running-overlay"><span class="running-dot"></span>'
+                        f'Carrier {carrier_number}/{num_carriers} ({carrier_id}, rank {rank}) '
+                        f'en route... ({carriers_completed}/{num_carriers} arrived)</div>',
+                        unsafe_allow_html=True,
+                    )
+                    carrier_anim_state["dynamic_artists"] = update_carrier_frame(
+                        carrier_fig, carrier_ax, carrier_base_handles, nodes_for_anim,
+                        top_routes, carrier_id, carrier_number, num_carriers, rank, route,
+                        current_node, status, carriers_completed,
+                        start_node=anim_state["start_node"], target_node=anim_state["target_node"],
+                        dynamic_artists=carrier_anim_state["dynamic_artists"],
+                    )
+                    with canvas_slot.container():
+                        st.pyplot(carrier_fig, width='stretch')
+
+                    # Real simulated travel time: distance actually covered so
+                    # far along THIS Carrier's committed route, at the fixed
+                    # firetruck speed -- the exact same distance/speed formula
+                    # the ETA metric uses. When a Carrier following the best
+                    # (rank-1) route reaches the target, this value equals that
+                    # route's eta_seconds exactly, since both reduce to
+                    # best_length / FIRETRUCK_SPEED_MPS for the same route.
+                    if timer_state["frozen_at"] is None and current_node in route:
+                        idx = route.index(current_node)
+                        traveled_m = sum(
+                            carrier_edge_lookup[(route[i], route[i + 1])]["distance_m"]
+                            for i in range(idx)
+                        )
+                        simulated_elapsed_s = traveled_m / FIRETRUCK_SPEED_MPS
+                        if status == "reached":
+                            # Freeze the instant the FIRST Carrier reports
+                            # "reached" -- every callback after this one is ignored.
+                            timer_state["frozen_at"] = simulated_elapsed_s
+                            render_timer(timer_slot, simulated_elapsed_s)
+                        else:
+                            timer_state["simulated_elapsed_s"] = simulated_elapsed_s
+                            render_timer(timer_slot, simulated_elapsed_s)
+                    time.sleep(0.03)  # small pause per Carrier step so the movement reads as motion
 
                 # Custom overlay instead of st.spinner() -- see the
                 # .running-overlay CSS above for why. Lives in loading_slot,
@@ -686,9 +789,31 @@ def render_dashboard():
                     enable_fire=enable_fire,
                     num_random_hazards=num_random_hazards if enable_random_hazards else 0,
                     random_hazard_seed=st.session_state["hazard_seed"],
-                    progress_callback=on_iteration,
+                    progress_callback=on_scout,
+                    carrier_progress_callback=on_carrier,
                 )
+                plt.close(anim_fig)      # only close once the whole run is done -- we reused this fig every frame
+                plt.close(carrier_fig)   # same for the Carrier phase's own reused fig
                 loading_slot.empty()
+
+                # Persist the measured stopwatch time -- frozen at the first
+                # Carrier's arrival if one made it, otherwise wherever the
+                # clock landed when the run ended (e.g. every Carrier got
+                # blocked) -- so it survives Streamlit reruns triggered by
+                # slider moves instead of reverting to the distance/speed
+                # ETA estimate below.
+                st.session_state["aco_results"]["measured_response_time_s"] = (
+                    timer_state["frozen_at"] if timer_state["frozen_at"] is not None
+                    else timer_state["simulated_elapsed_s"]
+                )
+                # Stash the normalized weights actually used for THIS run --
+                # Analytics reads these to show what fraction of the Scout
+                # Ants' routing decision each factor represented (the user's
+                # slider inputs), as opposed to measuring how the resulting
+                # route objectively turned out.
+                st.session_state["aco_results"]["dist_weight"] = w1
+                st.session_state["aco_results"]["risk_weight"] = w2
+                st.session_state["aco_results"]["complexity_weight"] = w3
 
         results = st.session_state.get("aco_results")
         # A result is "current" only if the sliders still match the position
@@ -700,11 +825,13 @@ def render_dashboard():
             and abs(results["fire_origin_y"] - fire_y) < 1
         )
 
-        # ETA for the first-in engine: distance / fixed firetruck speed.
-        # Per standard ICS protocol, only the first-in engine is timed to the
-        # fire itself -- subsequent apparatus stage rather than all racing in,
-        # so a single lead-unit ETA is the operationally meaningful number here.
-        if result_matches_sliders and results["success"]:
+        # Shows the actual measured time from Run click to the first Carrier
+        # reaching the target (frozen live during the animation above).
+        # Falls back to the distance/speed ETA estimate only for older
+        # results computed before this field existed.
+        if result_matches_sliders and results.get("measured_response_time_s") is not None:
+            render_timer(timer_slot, results["measured_response_time_s"])
+        elif result_matches_sliders and results["success"]:
             render_timer(timer_slot, results["eta_seconds"])
         else:
             render_timer(timer_slot)
@@ -745,26 +872,22 @@ def render_dashboard():
 
             perf_html = f"""
             <div class="custom-panel">
-                <div class="panel-header">Performance <span class="help-icon">?</span></div>
+                <div class="panel-header">Performance</div>
                 <div class="panel-body">
-                    <div class="metric-label">Scouts That Reached Target (iterations succeeded):</div>
-                    <div class="metric-value">{results['iterations_with_success']}/{results['num_iterations']}</div>
-                    <div class="metric-label">Carriers That Reached Target (via best route found, any iteration):</div>
-                    <div class="metric-value">{results['carrier_successes']}/{results['num_carriers']} Agents</div>
-                    <div class="metric-label">Graph Connectivity:</div>
-                    <div class="metric-value">{results['num_components']} component(s)</div>
+                    <div class="metric-label">Scouts That Reached Target:</div>
+                    <div class="metric-value">{results['scouts_reached_target']}/{results['scouts_run']} scouts{' (of ' + str(results['num_scouts']) + ' set)' if results['scouts_run'] < results['num_scouts'] else ''}</div>
+                    <div class="metric-label">Scouting Ended Early (3 paths verified):</div>
+                    <div class="metric-value">{'Yes' if results['early_termination'] else 'No -- ran full Scout population'}</div>
+                    <div class="metric-label">Carriers That Reached Target:</div>
+                    <div class="metric-value">{results['carrier_successes']}/{results['num_carriers']} Carriers</div>
                     <div class="metric-label">Fire Radius (end of run):</div>
                     <div class="metric-value">{results['final_fire_radius_m']:.0f} m</div>
-                    <div class="metric-label">Edges Blocked by Fire:</div>
-                    <div class="metric-value">{results['edges_blocked_last_iter']}</div>
-                    <div class="metric-label">Random Hazards Placed:</div>
-                    <div class="metric-value">{results['num_random_hazards']}</div>
                 </div>
             </div>
             """
             metrics_html = f"""
             <div class="custom-panel">
-                <div class="panel-header">Metrics <span class="help-icon">?</span></div>
+                <div class="panel-header">Metrics</div>
                 <div class="panel-body" style="padding-bottom: 5px;">
                     {top_routes_html}
                     <div class="metric-label">Start / Target:</div>
@@ -777,7 +900,7 @@ def render_dashboard():
         else:
             perf_html = """
             <div class="custom-panel">
-                <div class="panel-header">Performance <span class="help-icon">?</span></div>
+                <div class="panel-header">Performance</div>
                 <div class="panel-body">
                     <div class="metric-label">Status:</div>
                     <div class="metric-value">Click Run to simulate</div>
@@ -786,7 +909,7 @@ def render_dashboard():
             """
             metrics_html = """
             <div class="custom-panel">
-                <div class="panel-header">Metrics <span class="help-icon">?</span></div>
+                <div class="panel-header">Metrics</div>
                 <div class="panel-body" style="padding-bottom: 5px;">
                     <div class="metric-label">Status:</div>
                     <div class="metric-value">No simulation run yet</div>

@@ -20,7 +20,8 @@ DEFAULT_RESULTS = {
 
     # Right-hand stat list
     "nodes_visited": "14/14",
-    "hazards_bypassed": "5",
+    "fire_hazards_bypassed": "3",
+    "debris_hazards_bypassed": "2",
     "route_hazard_score": "Low",
     "vehicle_entrapment_risk": "None",
 }
@@ -48,11 +49,15 @@ def _build_results(aco_results):
         if pct_diff >= 0 else
         f"{abs(pct_diff)}% slower than the BFP benchmark."
     )
-    # edges_blocked_last_iter is fire-caused blocks only (random hazards are
-    # counted separately in num_random_hazards) -- summing them here gives
-    # the total distinct obstacles the run had to deal with, fire and
-    # debris combined, without double-counting either.
-    num_hazards_known = aco_results["num_random_hazards"] + aco_results["edges_blocked_last_iter"]
+    # Kept as two SEPARATE counts rather than summed into one "Hazards
+    # Bypassed" figure -- these come from two independently-toggleable
+    # settings (the "Enable fire hazard" checkbox defaults to ON, separate
+    # from "Enable random hazards"), so combining them into one number
+    # made it look like hazards were encountered even on a run where the
+    # person had only disabled random debris hazards, while fire hazard
+    # was still on and genuinely blocked some edges.
+    fire_hazards_bypassed = aco_results["edges_blocked_final"]
+    debris_hazards_bypassed = aco_results["num_random_hazards"]
 
     risk_pct = aco_results["avg_risk_pct"] or 0
     hazard_score = "Low" if risk_pct < 33 else ("Moderate" if risk_pct < 66 else "High")
@@ -70,11 +75,17 @@ def _build_results(aco_results):
         "callout_text": callout,
         "this_sim_pct": max(2, min(100, round(100 * sim_seconds / BFP_BENCHMARK_SECONDS))),
         "bfp_benchmark_pct": 100,
-        "path_distance_pct": aco_results["avg_distance_pct"] or 0,
-        "path_complexity_pct": aco_results["avg_complexity_pct"] or 0,
-        "structural_risk_pct": aco_results["avg_risk_pct"] or 0,
+        # These three represent how much each factor was WEIGHTED in the
+        # Scout Ants' routing decision (the slider inputs, normalized to
+        # 100%) -- not how the resulting route objectively turned out.
+        # .get() with a fallback handles results computed before this field
+        # existed, so an old cached run doesn't crash this page.
+        "path_distance_pct": round((aco_results.get("dist_weight") or 0) * 100),
+        "path_complexity_pct": round((aco_results.get("complexity_weight") or 0) * 100),
+        "structural_risk_pct": round((aco_results.get("risk_weight") or 0) * 100),
         "nodes_visited": f"{len(aco_results['best_route'])}/{len(aco_results['best_route'])}",
-        "hazards_bypassed": str(num_hazards_known),
+        "fire_hazards_bypassed": str(fire_hazards_bypassed),
+        "debris_hazards_bypassed": str(debris_hazards_bypassed),
         "route_hazard_score": hazard_score,
         "vehicle_entrapment_risk": entrapment_risk,
     }
@@ -355,6 +366,7 @@ def render_dispatch_analytics():
     <div class="analytics-row analytics-row-last">
         <div class="analytics-col">
             <div class="analytics-panel">
+                <div class="analytics-panel-header">Routing Priorities (as weighted)</div>
                 <div class="analytics-panel-body">
                     <div class="analytics-bar-row">
                         <div class="analytics-bar-row-top">
@@ -387,8 +399,12 @@ def render_dispatch_analytics():
                     <span class="analytics-stat-value">{results['nodes_visited']}</span>
                 </div>
                 <div class="analytics-stat-row">
-                    <span class="analytics-stat-label">Hazards Bypassed</span>
-                    <span class="analytics-stat-value">{results['hazards_bypassed']}</span>
+                    <span class="analytics-stat-label">Fire Hazards Bypassed</span>
+                    <span class="analytics-stat-value">{results['fire_hazards_bypassed']}</span>
+                </div>
+                <div class="analytics-stat-row">
+                    <span class="analytics-stat-label">Debris Hazards Bypassed</span>
+                    <span class="analytics-stat-value">{results['debris_hazards_bypassed']}</span>
                 </div>
                 <div class="analytics-stat-row">
                     <span class="analytics-stat-label">Route Hazard Score</span>
