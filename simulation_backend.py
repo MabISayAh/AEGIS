@@ -447,28 +447,37 @@ def run_full_simulation(
 
     carrier_successes = 0
     if top_routes:
-        # Ranked best-first (shortest first). Carriers always prefer the
-        # best still-passable verified path. Once any carrier discovers a
-        # path is impassable it is marked in the shared set; subsequent
-        # carriers skip it and take the next verified path instead of
-        # continuing to burn allocation on a known-dead route.
         carrier_route_rank_list = [r["route"] for r in top_routes]
         impassable_routes: set = set()
 
         def pick_best_available_route():
-            """Return (route, rank_index) for the shortest path not yet
-            known to be impassable. Falls back to the absolute best path
-            if every verified route has already been marked impassable
-            (individual carriers will still try mid-route fallback)."""
             for idx, route in enumerate(carrier_route_rank_list):
                 if tuple(route) not in impassable_routes:
                     return route, idx
-            # All known paths flagged impassable -- still send on rank 0
-            # so the per-carrier fallback logic can attempt alternatives.
             return carrier_route_rank_list[0], 0
 
+        # ============================================================
+        # 3 CARRIERS PER VERIFIED PATH
+        # C1–C3 → Path 1 (best)
+        # C4–C6 → Path 2
+        # C7–C9 → Path 3
+        # ============================================================
+        CARRIERS_PER_ROUTE = 3
+
         for i in range(num_carriers):
-            assigned_route, rank = pick_best_available_route()
+            if not carrier_route_rank_list:
+                break
+
+            # Assign in blocks of 3
+            route_index = (i // CARRIERS_PER_ROUTE) % len(carrier_route_rank_list)
+            assigned_route = carrier_route_rank_list[route_index]
+            rank = route_index
+
+            # If this path was already marked impassable by a previous carrier,
+            # fall back to the best still-available path
+            if tuple(assigned_route) in impassable_routes:
+                assigned_route, rank = pick_best_available_route()
+
             hazard_lookup_fn, carrier_elapsed_state = carrier_hazard_lookup_factory()
             carrier = Carrier(
                 carrier_id=f"C{i + 1}",
@@ -479,6 +488,7 @@ def run_full_simulation(
                 hazard_threshold=HazardTier.IMPASSABLE,
                 impassable_routes=impassable_routes,
             )
+
             total_steps = len(assigned_route) + 5
 
             if carrier_progress_callback is not None:
@@ -487,10 +497,6 @@ def run_full_simulation(
                     rank=rank + 1, route=carrier.committed_route, current_node=carrier.current_node,
                     step=0, total_steps=total_steps, status="starting",
                     carriers_completed=carrier_successes, top_routes=top_routes,
-                    # Additive -- same purpose as the Scout phase's elapsed_s:
-                    # lets the dashboard draw the fire's CURRENT radius while
-                    # this Carrier travels, not just the radius at the end
-                    # of the whole run.
                     elapsed_s=carrier_elapsed_state["elapsed_s"],
                 )
 
@@ -500,8 +506,6 @@ def run_full_simulation(
                     succeeded = True
                     break
                 result = carrier.next_step(tracker, pheromone)
-                # After each step, re-resolve rank in case the carrier
-                # switched routes via fallback (so the UI stays accurate).
                 try:
                     rank = carrier_route_rank_list.index(carrier.committed_route)
                 except ValueError:
