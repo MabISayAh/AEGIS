@@ -32,6 +32,15 @@ FIRE_STATION_LON = 120.95668125249459
 FIRETRUCK_SPEED_KMH = 25  # standard heavy fire apparatus average speed, Metro Manila
 FIRETRUCK_SPEED_MPS = FIRETRUCK_SPEED_KMH * 1000 / 3600
 
+# Total simulated wall-clock time the fire is allowed to grow across the
+# whole scouting phase, used as the default for scouting_phase_duration_s
+# below. Exposed as a module-level constant (rather than just a default
+# argument value) so dashboard.py can import it directly and compute the
+# SAME live fire radius client-side, per Scout/Carrier animation frame,
+# without needing simulation_backend to thread a duplicate value through
+# every callback.
+DEFAULT_SCOUTING_PHASE_DURATION_S = 600
+
 
 def latlon_to_utm(lat, lon, epsg="EPSG:32651"):
     transformer = Transformer.from_crs("EPSG:4326", epsg, always_xy=True)
@@ -223,7 +232,7 @@ def run_full_simulation(
     fire_origin_x=None, fire_origin_y=None,
     spread_rate_mps=0.5,
     time_step_s=30,               # generic time unit
-    scouting_phase_duration_s=600,  # total wall-clock time the fire is allowed to grow
+    scouting_phase_duration_s=DEFAULT_SCOUTING_PHASE_DURATION_S,  # total wall-clock time the fire is allowed to grow
     enable_fire=True,
     num_random_hazards=0,
     random_hazard_seed=None,
@@ -383,6 +392,11 @@ def run_full_simulation(
                 scout_traversed_edges=list(traversed),
                 verified_routes=[list(r) for r in verified_routes],
                 best_route=verified_routes[0] if verified_routes else None,
+                # Additive -- lets the caller compute the fire's CURRENT
+                # radius (spread_rate_mps * elapsed_s) for a live-updating
+                # display, instead of only knowing the final radius after
+                # the whole run completes.
+                elapsed_s=elapsed_s,
             )
 
         if early_termination:
@@ -423,7 +437,13 @@ def run_full_simulation(
             tier = fire_model.hazard_tier_for_point(mx, my, state["elapsed_s"])
             return HazardReading(tier)
 
-        return lookup_fn
+        # Also returning `state` (not just lookup_fn) is additive -- it
+        # lets the dispatch loop below read the Carrier's own live
+        # elapsed_s for the progress callback (so the dashboard can draw
+        # the fire's CURRENT radius during Carrier animation, matching
+        # what the Scout phase now does), without changing how lookup_fn
+        # itself is used by Carrier.next_step().
+        return lookup_fn, state
 
     carrier_successes = 0
     if top_routes:
@@ -449,12 +469,13 @@ def run_full_simulation(
 
         for i in range(num_carriers):
             assigned_route, rank = pick_best_available_route()
+            hazard_lookup_fn, carrier_elapsed_state = carrier_hazard_lookup_factory()
             carrier = Carrier(
                 carrier_id=f"C{i + 1}",
                 current_node=assigned_route[0],
                 committed_route=assigned_route,
                 route_rank_list=carrier_route_rank_list,
-                hazard_lookup=carrier_hazard_lookup_factory(),
+                hazard_lookup=hazard_lookup_fn,
                 hazard_threshold=HazardTier.IMPASSABLE,
                 impassable_routes=impassable_routes,
             )
@@ -466,6 +487,11 @@ def run_full_simulation(
                     rank=rank + 1, route=carrier.committed_route, current_node=carrier.current_node,
                     step=0, total_steps=total_steps, status="starting",
                     carriers_completed=carrier_successes, top_routes=top_routes,
+                    # Additive -- same purpose as the Scout phase's elapsed_s:
+                    # lets the dashboard draw the fire's CURRENT radius while
+                    # this Carrier travels, not just the radius at the end
+                    # of the whole run.
+                    elapsed_s=carrier_elapsed_state["elapsed_s"],
                 )
 
             succeeded = False
@@ -487,6 +513,7 @@ def run_full_simulation(
                         step=step_num, total_steps=total_steps,
                         status="moving" if result is not None else "blocked",
                         carriers_completed=carrier_successes, top_routes=top_routes,
+                        elapsed_s=carrier_elapsed_state["elapsed_s"],
                     )
                 if result is None:
                     break
@@ -503,6 +530,7 @@ def run_full_simulation(
                     step=total_steps, total_steps=total_steps,
                     status="reached" if succeeded else "blocked",
                     carriers_completed=carrier_successes, top_routes=top_routes,
+                    elapsed_s=carrier_elapsed_state["elapsed_s"],
                 )
 
     final_fire_radius_m = fire_model.radius_at((scouts_run / num_scouts) * scouting_phase_duration_s)
@@ -534,6 +562,13 @@ def run_full_simulation(
         "scouts_step_budget": scouts_step_budget,
         "max_steps_per_scout": max_steps_per_scout,
         "scouts_run": scouts_run,
+        # The GENUINE count of routes that hit the confidence threshold
+        # (len(verified_routes)) before padding -- distinct from
+        # len(top_routes), which is always padded up to 3 with the
+        # shortest remaining discovered routes when true verification
+        # doesn't reach 3 before the scout budget runs out. Purely
+        # additive key; existing callers reading other keys are unaffected.
+        "num_true_verified_routes": len(verified_routes),
         "early_termination": early_termination,
         "num_scouts": num_scouts,
         "carrier_successes": carrier_successes,

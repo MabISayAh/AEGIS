@@ -9,6 +9,7 @@ from simulation_backend import (
     run_full_simulation, FIRETRUCK_SPEED_KMH, FIRETRUCK_SPEED_MPS, FIRE_STATION_LAT, FIRE_STATION_LON, latlon_to_utm,
     load_graph, build_adjacency, build_edge_lookup, get_largest_component_nodes,
     nearest_node, compute_baseline_corridor_edges, pick_random_hazard_edges,
+    DEFAULT_SCOUTING_PHASE_DURATION_S,
 )
 from plotting import (
     plot_graph_with_route, plot_preview, plot_scout_progress,
@@ -596,7 +597,7 @@ def render_dashboard():
                 # until this is the very first render of the session.
                 if "hazard_seed" not in st.session_state:
                     st.session_state["hazard_seed"] = random.randint(0, 2**31 - 1)
-                if st.button("🔀 Shuffle hazard positions", key="shuffle_hazards_btn", disabled=not enable_random_hazards, width='stretch'):
+                if st.button("Shuffle hazard positions", key="shuffle_hazards_btn", disabled=not enable_random_hazards, width='stretch'):
                     st.session_state["hazard_seed"] = random.randint(0, 2**31 - 1)
 
                 st.caption(f"Start point is fixed at the Baseco Fire Station. Firetruck speed fixed at {FIRETRUCK_SPEED_KMH} km/h.")
@@ -663,7 +664,23 @@ def render_dashboard():
                 # the handful of artists that actually change (routes,
                 # markers, title, legend). That's what makes it cheap
                 # enough to render every single Scout, not just some.
-                anim_fig, anim_ax, anim_base_handles = create_scout_canvas(nodes_for_anim, edges_for_anim)
+                # The exact random-hazard edges THIS run will use -- same
+                # deterministic hazard-picking logic and seed
+                # run_full_simulation uses internally (see
+                # compute_preview_hazards's own docstring). Computed once,
+                # up front, and drawn into both animation canvases' static
+                # base layer below, so hazards are visible DURING the live
+                # Scout/Carrier animation, not just in the pre-Run preview
+                # and the post-Run results map.
+                live_hazard_edges = compute_preview_hazards(
+                    fire_x, fire_y,
+                    num_random_hazards if enable_random_hazards else 0,
+                    st.session_state["hazard_seed"],
+                )
+
+                anim_fig, anim_ax, anim_base_handles = create_scout_canvas(
+                    nodes_for_anim, edges_for_anim, hazard_edges=live_hazard_edges,
+                )
                 anim_state = {"start_node": None, "target_node": None, "dynamic_artists": None}
 
                 # Live stopwatch: starts now (Scout phase kickoff) and keeps
@@ -689,7 +706,8 @@ def render_dashboard():
                     render_timer(timer_slot, timer_state["simulated_elapsed_s"])
 
                 def on_scout(scout_number, num_scouts, scout_route, scout_status,
-                             scout_traversed_edges, verified_routes, best_route):
+                             scout_traversed_edges, verified_routes, best_route,
+                             elapsed_s=0.0):
                     if scout_route and anim_state["start_node"] is None:
                         anim_state["start_node"] = scout_route[0]
                         anim_state["target_node"] = scout_route[-1]
@@ -699,6 +717,14 @@ def render_dashboard():
                         f'({len(verified_routes)}/3 paths verified)</div>',
                         unsafe_allow_html=True,
                     )
+                    # Live fire radius at this exact point in the Scout
+                    # phase -- same closed-form the backend's FireModel
+                    # uses (radius = spread_rate_mps * elapsed_s), computed
+                    # here instead of threading a FireModel instance
+                    # through the callback. Only meaningful if fire is on.
+                    live_fire_radius_m = (
+                        (spread_rate_m_per_min / 60) * elapsed_s if enable_fire else None
+                    )
                     anim_state["dynamic_artists"] = update_scout_frame(
                         anim_fig, anim_ax, anim_base_handles, nodes_for_anim,
                         scout_number, num_scouts,
@@ -707,6 +733,8 @@ def render_dashboard():
                         target_node=anim_state["target_node"],
                         scout_status=scout_status,
                         dynamic_artists=anim_state["dynamic_artists"],
+                        fire_origin_xy=(fire_x, fire_y) if enable_fire else None,
+                        fire_radius_m=live_fire_radius_m,
                     )
                     with canvas_slot.container():
                         st.pyplot(anim_fig, width='stretch')
@@ -718,7 +746,9 @@ def render_dashboard():
                 # its OWN canvas/fig, so the Scout swarm's final frame stays
                 # on screen as the last thing painted before Carriers take
                 # over, instead of the two phases fighting over one canvas.
-                carrier_fig, carrier_ax, carrier_base_handles = create_carrier_canvas(nodes_for_anim, edges_for_anim)
+                carrier_fig, carrier_ax, carrier_base_handles = create_carrier_canvas(
+                    nodes_for_anim, edges_for_anim, hazard_edges=live_hazard_edges,
+                )
                 carrier_anim_state = {"dynamic_artists": None}
 
                 # Edge-distance lookup, reused to compute each Carrier's real
@@ -728,12 +758,19 @@ def render_dashboard():
 
                 def on_carrier(carrier_id, carrier_number, num_carriers, rank, route,
                                 current_node, step, total_steps, status,
-                                carriers_completed, top_routes):
+                                carriers_completed, top_routes, elapsed_s=0.0):
                     loading_slot.markdown(
                         f'<div class="running-overlay"><span class="running-dot"></span>'
                         f'Carrier {carrier_number}/{num_carriers} ({carrier_id}, rank {rank}) '
                         f'en route... ({carriers_completed}/{num_carriers} arrived)</div>',
                         unsafe_allow_html=True,
+                    )
+                    # Same live fire radius computation as the Scout phase --
+                    # the fire keeps spreading while Carriers travel, so this
+                    # keeps growing across the whole Carrier phase too,
+                    # instead of freezing at whatever it was when scouting ended.
+                    live_fire_radius_m = (
+                        (spread_rate_m_per_min / 60) * elapsed_s if enable_fire else None
                     )
                     carrier_anim_state["dynamic_artists"] = update_carrier_frame(
                         carrier_fig, carrier_ax, carrier_base_handles, nodes_for_anim,
@@ -741,6 +778,8 @@ def render_dashboard():
                         current_node, status, carriers_completed,
                         start_node=anim_state["start_node"], target_node=anim_state["target_node"],
                         dynamic_artists=carrier_anim_state["dynamic_artists"],
+                        fire_origin_xy=(fire_x, fire_y) if enable_fire else None,
+                        fire_radius_m=live_fire_radius_m,
                     )
                     with canvas_slot.container():
                         st.pyplot(carrier_fig, width='stretch')

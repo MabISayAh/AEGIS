@@ -206,24 +206,57 @@ def plot_scout_progress(nodes, edges, scout_number, num_scouts, scout_route,
     return fig
 
 
-def create_scout_canvas(nodes, edges):
+def create_scout_canvas(nodes, edges, hazard_edges=None):
     """Draws the static base graph (every road edge) ONCE and returns the
     reusable fig/ax plus the static road-type legend handles. This is the
     expensive part of plot_scout_progress -- pulling it out of the
     per-frame path is what makes update_scout_frame() cheap enough to call
     on every single Scout without skipping frames.
+
+    `hazard_edges` (the permanent debris/collapsed-structure edges, same
+    ones plot_preview and plot_graph_with_route draw) is drawn here too,
+    once, as part of the static layer -- these don't change frame to
+    frame, so there's no reason to pay the cost of redrawing them on every
+    Scout the way the dynamic artists (routes, markers) are.
     """
     fig, ax = plt.subplots(figsize=(9.6, 6.4))
     _draw_base_graph(ax, nodes, edges)
-    _style_axes(fig, ax)
     base_handles = list(ROAD_LEGEND)
+    _draw_random_hazards(ax, base_handles, nodes, hazard_edges)
+    _style_axes(fig, ax)
     return fig, ax, base_handles
+
+
+def _draw_live_fire(ax, new_artists, handles, fire_origin_xy, fire_radius_m):
+    """Draws the fire's CURRENT extent (not the final one) as a dynamic
+    artist -- appended to new_artists so update_scout_frame/
+    update_carrier_frame's existing remove-and-redraw cycle clears and
+    regrows it every frame, same as routes/markers. Mirrors the styling
+    of the final-result fire circle in plot_graph_with_route so the fire
+    looks the same whether you're watching it live or looking at the
+    result afterward. No-ops if fire_origin_xy/fire_radius_m aren't
+    provided, so callers that don't have fire enabled don't need to
+    special-case anything."""
+    if fire_origin_xy is None or not fire_radius_m or fire_radius_m <= 0:
+        return
+    fx, fy = fire_origin_xy
+    fire_circle = Circle(
+        (fx, fy), fire_radius_m,
+        facecolor="#FF6F6F", edgecolor="#CC3333",
+        alpha=0.25, zorder=2, clip_on=False,
+    )
+    ax.add_patch(fire_circle)
+    new_artists.append(fire_circle)
+    star = ax.scatter([fx], [fy], color="#CC3333", marker="*", s=180, zorder=3, clip_on=False)
+    new_artists.append(star)
+    handles.append(Line2D([0], [0], marker="*", color="w", markerfacecolor="#CC3333", markersize=14, label="Fire origin"))
+    handles.append(Line2D([0], [0], marker="o", color="w", markerfacecolor="#FF6F6F", markersize=10, alpha=0.5, label="Fire extent (current)"))
 
 
 def update_scout_frame(fig, ax, base_handles, nodes, scout_number, num_scouts,
                         scout_route, verified_routes, best_route,
                         start_node=None, target_node=None, scout_status=None,
-                        dynamic_artists=None):
+                        dynamic_artists=None, fire_origin_xy=None, fire_radius_m=None):
     """One animation frame, reusing the fig/ax from create_scout_canvas
     instead of rebuilding the base graph. Only removes/redraws the small
     set of artists that actually change frame to frame (verified routes,
@@ -240,6 +273,8 @@ def update_scout_frame(fig, ax, base_handles, nodes, scout_number, num_scouts,
 
     new_artists = []
     handles = list(base_handles)
+
+    _draw_live_fire(ax, new_artists, handles, fire_origin_xy, fire_radius_m)
 
     verified_styles = [
         ("#60CE56", 2.8, "solid", "Verified route 1"),
@@ -288,17 +323,18 @@ def update_scout_frame(fig, ax, base_handles, nodes, scout_number, num_scouts,
     return new_artists
 
 
-def create_carrier_canvas(nodes, edges):
+def create_carrier_canvas(nodes, edges, hazard_edges=None):
     """Same static base-graph canvas as create_scout_canvas -- kept as a
     separate name so dashboard.py's Carrier phase doesn't have to reuse a
     function named after Scouts, even though the drawing is identical."""
-    return create_scout_canvas(nodes, edges)
+    return create_scout_canvas(nodes, edges, hazard_edges=hazard_edges)
 
 
 def update_carrier_frame(fig, ax, base_handles, nodes, top_routes, carrier_id,
                           carrier_number, num_carriers, rank, route, current_node,
                           status, carriers_completed, start_node=None,
-                          target_node=None, dynamic_artists=None):
+                          target_node=None, dynamic_artists=None,
+                          fire_origin_xy=None, fire_radius_m=None):
     """One animation frame during the Carrier phase: the (up to 3) ranked
     routes drawn faintly as background context, the specific route THIS
     carrier is currently committed to highlighted (matters once a carrier
@@ -315,6 +351,8 @@ def update_carrier_frame(fig, ax, base_handles, nodes, top_routes, carrier_id,
 
     new_artists = []
     handles = list(base_handles)
+
+    _draw_live_fire(ax, new_artists, handles, fire_origin_xy, fire_radius_m)
 
     rank_colors = {1: "#60CE56", 2: "#3B82C4", 3: "#9B59B6"}
     route_styles = [

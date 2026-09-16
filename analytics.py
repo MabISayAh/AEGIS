@@ -28,7 +28,7 @@ DEFAULT_RESULTS = {
 
 # BFP's stated average dispatch benchmark, used as the comparison baseline
 # for both the callout banner and the transit-time progress bars.
-BFP_BENCHMARK_SECONDS = 4.5 * 60
+BFP_BENCHMARK_SECONDS = 6.5 * 60
 
 
 def _format_transit(seconds):
