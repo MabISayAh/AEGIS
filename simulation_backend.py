@@ -450,33 +450,33 @@ def run_full_simulation(
         carrier_route_rank_list = [r["route"] for r in top_routes]
         impassable_routes: set = set()
 
-        def pick_best_available_route():
-            for idx, route in enumerate(carrier_route_rank_list):
+        CARRIERS_PER_ROUTE = 3  # how many carriers originally assigned per path
+
+        def find_next_available_route(start_index: int):
+            """
+            Starting from start_index, scan forward (and wrap around)
+            until we find a route that is not yet marked impassable.
+            Returns (route, rank_index). Falls back to start_index if all are blocked.
+            """
+            n = len(carrier_route_rank_list)
+            for offset in range(n):
+                idx = (start_index + offset) % n
+                route = carrier_route_rank_list[idx]
                 if tuple(route) not in impassable_routes:
                     return route, idx
-            return carrier_route_rank_list[0], 0
-
-        # ============================================================
-        # 3 CARRIERS PER VERIFIED PATH
-        # C1–C3 → Path 1 (best)
-        # C4–C6 → Path 2
-        # C7–C9 → Path 3
-        # ============================================================
-        CARRIERS_PER_ROUTE = 3
+            # Everything is blocked – still return the preferred one
+            # (individual carrier fallback logic will try alternatives)
+            return carrier_route_rank_list[start_index % n], start_index % n
 
         for i in range(num_carriers):
             if not carrier_route_rank_list:
                 break
 
-            # Assign in blocks of 3
-            route_index = (i // CARRIERS_PER_ROUTE) % len(carrier_route_rank_list)
-            assigned_route = carrier_route_rank_list[route_index]
-            rank = route_index
+            # Original preferred route based on the 3-per-path grouping
+            preferred_index = (i // CARRIERS_PER_ROUTE) % len(carrier_route_rank_list)
 
-            # If this path was already marked impassable by a previous carrier,
-            # fall back to the best still-available path
-            if tuple(assigned_route) in impassable_routes:
-                assigned_route, rank = pick_best_available_route()
+            # From the preferred index, skip any already-blocked routes
+            assigned_route, rank = find_next_available_route(preferred_index)
 
             hazard_lookup_fn, carrier_elapsed_state = carrier_hazard_lookup_factory()
             carrier = Carrier(
