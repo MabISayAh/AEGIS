@@ -227,30 +227,52 @@ def create_scout_canvas(nodes, edges, hazard_edges=None):
     return fig, ax, base_handles
 
 
-def _draw_live_fire(ax, new_artists, handles, fire_origin_xy, fire_radius_m):
-    """Draws the fire's CURRENT extent (not the final one) as a dynamic
-    artist -- appended to new_artists so update_scout_frame/
-    update_carrier_frame's existing remove-and-redraw cycle clears and
-    regrows it every frame, same as routes/markers. Mirrors the styling
-    of the final-result fire circle in plot_graph_with_route so the fire
-    looks the same whether you're watching it live or looking at the
-    result afterward. No-ops if fire_origin_xy/fire_radius_m aren't
+def _draw_live_fire(ax, new_artists, handles, fire_origin_xy, fire_radius_m,
+                     moderate_buffer_m=30, low_buffer_m=80):
+    """Draws the fire's CURRENT extent as a dynamic artist -- appended to
+    new_artists so update_scout_frame/update_carrier_frame's existing
+    remove-and-redraw cycle clears and regrows it every frame, same as
+    routes/markers. No-ops if fire_origin_xy/fire_radius_m aren't
     provided, so callers that don't have fire enabled don't need to
-    special-case anything."""
-    if fire_origin_xy is None or not fire_radius_m or fire_radius_m <= 0:
+    special-case anything.
+
+    Draws all THREE hazard tiers as concentric rings (matching
+    aco_core.hazard_model.FireModel.hazard_tier_for_point's own
+    LOW/MODERATE/IMPASSABLE bands, moderate_buffer_m/low_buffer_m here
+    must stay in sync with FireModel's own defaults), not just the
+    IMPASSABLE core -- at low spread rates the core alone stays a
+    barely-visible dot for a long time, while the LOW/MODERATE bands
+    give the fire real, visible size from the very first frame and make
+    its growth over time actually readable, the same way Scouts
+    themselves are reacting to all three tiers, not just the core."""
+    if fire_origin_xy is None or fire_radius_m is None or fire_radius_m < 0:
         return
     fx, fy = fire_origin_xy
-    fire_circle = Circle(
-        (fx, fy), fire_radius_m,
-        facecolor="#FF6F6F", edgecolor="#CC3333",
-        alpha=0.25, zorder=2, clip_on=False,
-    )
-    ax.add_patch(fire_circle)
-    new_artists.append(fire_circle)
+
+    # Drawn largest-to-smallest, each on top of the last, so overlapping
+    # alpha doesn't wash the center out -- reads as three bands getting
+    # hotter toward the middle rather than one flat blob.
+    tiers = [
+        (fire_radius_m + low_buffer_m, "#FFD54F", 0.18, "Fire hazard -- LOW"),
+        (fire_radius_m + moderate_buffer_m, "#FF8A65", 0.30, "Fire hazard -- MODERATE"),
+        (fire_radius_m, "#FF6F6F", 0.55, "Fire hazard -- IMPASSABLE"),
+    ]
+    for i, (r, color, alpha, label) in enumerate(tiers):
+        if r <= 0:
+            continue
+        circle = Circle(
+            (fx, fy), r,
+            facecolor=color, edgecolor=color,
+            alpha=alpha, zorder=2 + i * 0.1, clip_on=False, linewidth=0,
+        )
+        ax.add_patch(circle)
+        new_artists.append(circle)
+        handles.append(Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
+                               markersize=10, alpha=min(alpha + 0.35, 1.0), label=label))
+
     star = ax.scatter([fx], [fy], color="#CC3333", marker="*", s=180, zorder=3, clip_on=False)
     new_artists.append(star)
     handles.append(Line2D([0], [0], marker="*", color="w", markerfacecolor="#CC3333", markersize=14, label="Fire origin"))
-    handles.append(Line2D([0], [0], marker="o", color="w", markerfacecolor="#FF6F6F", markersize=10, alpha=0.5, label="Fire extent (current)"))
 
 
 def update_scout_frame(fig, ax, base_handles, nodes, scout_number, num_scouts,
