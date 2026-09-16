@@ -145,8 +145,7 @@ def plot_scout_progress(nodes, edges, scout_number, num_scouts, scout_route,
         "step_budget": "still searching -- ran out of step budget",
     }.get(scout_status, "reached target" if scout_route else "blocked / backtracked")
     ax.set_title(
-        f"Scout {scout_number}/{num_scouts} -- {status}  "
-        f"({len(verified_routes or [])}/3 paths verified)",
+        f"Scout {scout_number}/{num_scouts} -- {status}",
         fontsize=10, color="#555",
     )
     _style_axes(fig, ax)
@@ -256,8 +255,7 @@ def update_scout_frame(fig, ax, base_handles, nodes, scout_number, num_scouts,
     }.get(scout_status, "reached target" if scout_route else "blocked / backtracked")
 
     ax.set_title(
-        f"Scout {scout_number}/{num_scouts} -- {status}  "
-        f"({len(verified_routes or [])}/3 paths verified)",
+        f"Scout {scout_number}/{num_scouts} -- {status}",
         fontsize=10, color="#555",
     )
     _place_legend(fig, ax, handles, fontsize=7.5)

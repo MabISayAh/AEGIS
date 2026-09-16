@@ -225,9 +225,9 @@ def run_full_simulation(
     num_scouts,
     num_carriers,
     max_steps_per_scout=None,
-    alpha=1.0, beta=1.0,          # ALPHA lowered to 0.5 to encourage spreading out
+    alpha=0.7, beta=1.0,          # ALPHA lowered to 0.5 to encourage spreading out
     delta_tau_plus=1.0, delta_tau_minus=1.0,
-    confidence_fraction=0.05,     # Tc = confidence_fraction * num_scouts (kept at 0.05)
+    confidence_fraction=0.04,     # Tc = confidence_fraction * num_scouts (kept at 0.05)
     start_node=None, target_node=None,
     fire_origin_x=None, fire_origin_y=None,
     spread_rate_mps=0.5,

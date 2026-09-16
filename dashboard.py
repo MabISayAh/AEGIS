@@ -584,7 +584,7 @@ def render_dashboard():
                 fire_x_pct = st.slider("Fire Origin X (%)", 0, 100, 50, disabled=not enable_fire, key="fire_x_pct_slider")
                 fire_y_pct = st.slider("Fire Origin Y (%)", 0, 100, 50, disabled=not enable_fire, key="fire_y_pct_slider")
                 spread_rate_m_per_min = st.slider(
-                    "Fire Spread Rate (m/min)", 0.1, 5.0, 1.0, step=0.1, disabled=not enable_fire, key="spread_rate_slider"
+                    "Fire Spread Rate (m/min)", 0.1, 2.5, 1.0, step=0.1, disabled=not enable_fire, key="spread_rate_slider"
                 )
 
                 st.markdown('<div class="metric-label" style="margin-top:8px;">Random Hazards</div>', unsafe_allow_html=True)
@@ -713,8 +713,7 @@ def render_dashboard():
                         anim_state["target_node"] = scout_route[-1]
                     loading_slot.markdown(
                         f'<div class="running-overlay"><span class="running-dot"></span>'
-                        f'Scout {scout_number}/{num_scouts} exploring the network... '
-                        f'({len(verified_routes)}/3 paths verified)</div>',
+                        f'Scout {scout_number}/{num_scouts} exploring the network...</div>',
                         unsafe_allow_html=True,
                     )
                     # Live fire radius at this exact point in the Scout
@@ -915,8 +914,6 @@ def render_dashboard():
                 <div class="panel-body">
                     <div class="metric-label">Scouts That Reached Target:</div>
                     <div class="metric-value">{results['scouts_reached_target']}/{results['scouts_run']} scouts{' (of ' + str(results['num_scouts']) + ' set)' if results['scouts_run'] < results['num_scouts'] else ''}</div>
-                    <div class="metric-label">Scouting Ended Early (3 paths verified):</div>
-                    <div class="metric-value">{'Yes' if results['early_termination'] else 'No -- ran full Scout population'}</div>
                     <div class="metric-label">Carriers That Reached Target:</div>
                     <div class="metric-value">{results['carrier_successes']}/{results['num_carriers']} Carriers</div>
                     <div class="metric-label">Fire Radius (end of run):</div>
