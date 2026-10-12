@@ -6,6 +6,9 @@ best route as matplotlib figures for embedding in Streamlit via st.pyplot.
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.lines import Line2D
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize
+import matplotlib as mpl
 
 # Road-type visual styling -- grouped into 3 tiers so the legend stays
 # readable instead of listing every individual OSM tag.
@@ -101,6 +104,100 @@ def plot_preview(nodes, edges, fire_xy=None, start_xy=None, hazard_edges=None):
 
     _style_axes(fig, ax)
     _place_legend(fig, ax, handles, fontsize=8)
+    return fig
+
+
+# D/R/C edge-attribute heatmap views -- these mirror EXACTLY the raw
+# fields and fallback defaults simulation_backend.py uses when it builds
+# EdgeAttributes for the routing algorithm (see raw_attrs in
+# run_full_simulation), so what's shown here is what the algorithm
+# actually sees, not a separately re-derived approximation.
+ATTRIBUTE_CONFIG = {
+    "distance": {
+        "title": "Distance (D) per edge",
+        "colorbar_label": "Distance (m)",
+    },
+    "risk": {
+        "title": "Structural Risk (R) per edge",
+        "colorbar_label": "Risk score (1-10)",
+    },
+    "complexity": {
+        "title": "Path Complexity (C) per edge",
+        "colorbar_label": "Turn complexity (degrees)",
+    },
+}
+
+
+def _edge_attribute_value(e, attribute):
+    if attribute == "distance":
+        return e.get("distance_m", 0) or 0
+    if attribute == "risk":
+        return e.get("risk_score") or 5  # same fallback simulation_backend.py uses
+    if attribute == "complexity":
+        return e.get("turn_complexity_deg", 0) or 0
+    raise ValueError(f"unknown attribute: {attribute}")
+
+
+def plot_attribute_heatmap(nodes, edges, attribute, fire_xy=None, start_xy=None, hazard_edges=None):
+    """
+    Colors every edge by its D, R, or C value instead of by road type.
+    Green = low cost, red = high cost on that one dimension -- consistent
+    direction across all three views since all three are cost terms in
+    the desirability formula (w1*D + w2*R + w3*C).
+
+    Normalization matches desirability.py's normalize_edge_attributes()
+    exactly: value / max(value) across the graph, NOT a min-max stretch.
+    An edge with 0 complexity reads as fully green here for the same
+    reason it contributes 0 cost to the algorithm's own scoring.
+    """
+    cfg = ATTRIBUTE_CONFIG[attribute]
+    fig, ax = plt.subplots(figsize=(9.6, 6.4))
+
+    segments, values = [], []
+    for e in edges.values():
+        u, v = e["from"], e["to"]
+        if u not in nodes or v not in nodes:
+            continue
+        segments.append([
+            (nodes[u]["utm_x"], nodes[u]["utm_y"]),
+            (nodes[v]["utm_x"], nodes[v]["utm_y"]),
+        ])
+        values.append(_edge_attribute_value(e, attribute))
+
+    max_val = (max(values) if values else 1.0) or 1.0
+    norm = Normalize(vmin=0, vmax=max_val)
+    cmap = mpl.colormaps["RdYlGn_r"]
+
+    lc = LineCollection(segments, cmap=cmap, norm=norm, linewidths=2.4, zorder=2, clip_on=False)
+    lc.set_array(values)
+    ax.add_collection(lc)
+    ax.autoscale()
+
+    handles = []
+    _draw_random_hazards(ax, handles, nodes, hazard_edges)
+
+    if fire_xy is not None:
+        ax.scatter([fire_xy[0]], [fire_xy[1]], color="#CC3333", marker="*", s=220, zorder=3, clip_on=False)
+        handles.append(Line2D([0], [0], marker="*", color="w", markerfacecolor="#CC3333", markersize=14, label="Fire origin"))
+    if start_xy is not None:
+        sx, sy = _offset_point(*start_xy)
+        ax.scatter([sx], [sy], color="#477B9E", marker="o", s=110, zorder=3, clip_on=False)
+        handles.append(Line2D([0], [0], marker="o", color="w", markerfacecolor="#477B9E", markersize=10, label="Start"))
+
+    _style_axes(fig, ax)
+    ax.set_title(cfg["title"], fontsize=11, color="#444")
+    fig.subplots_adjust(left=0.02, right=0.72, top=0.90, bottom=0.05)
+
+    cbar = fig.colorbar(lc, ax=ax, fraction=0.05, pad=0.03)
+    cbar.set_label(cfg["colorbar_label"], fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+
+    if handles:
+        ax.legend(
+            handles=handles, loc="upper left", bbox_to_anchor=(1.28, 1.0),
+            frameon=False, fontsize=8, borderaxespad=0.0,
+        )
+
     return fig
 
 

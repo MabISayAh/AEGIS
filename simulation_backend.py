@@ -32,6 +32,68 @@ FIRE_STATION_LON = 120.95668125249459
 FIRETRUCK_SPEED_KMH = 25  # standard heavy fire apparatus average speed, Metro Manila
 FIRETRUCK_SPEED_MPS = FIRETRUCK_SPEED_KMH * 1000 / 3600
 
+# --- Risk/complexity-aware travel speed ---
+# A Carrier's real speed isn't constant -- narrow, structurally risky, or
+# sharply-turning streets force slower, more careful driving. These three
+# are tunable: raise the slowdown weights to penalize risk/complexity more
+# aggressively, lower them to stay closer to the flat FIRETRUCK_SPEED_MPS
+# baseline. MIN_SPEED_FACTOR is a floor -- a route is always still
+# PASSABLE, just slow, never effectively an infinite travel time.
+MAX_RISK_SLOWDOWN = 0.01       # at max normalized risk, speed drops up to 1%
+MAX_COMPLEXITY_SLOWDOWN = 0.01 # at max normalized complexity, speed drops up to 1%
+MIN_SPEED_FACTOR = 0.25       # safety floor: never slower than 25% of normal speed
+
+
+def edge_speed_factor(risk_norm, complexity_norm):
+    """Multiplier on FIRETRUCK_SPEED_MPS for one edge, in [MIN_SPEED_FACTOR, 1.0].
+    1.0 = full speed (edge has zero normalized risk/complexity)."""
+    factor = 1.0 - (MAX_RISK_SLOWDOWN * risk_norm) - (MAX_COMPLEXITY_SLOWDOWN * complexity_norm)
+    return max(factor, MIN_SPEED_FACTOR)
+
+
+def edge_travel_time_s(distance_m, risk_norm, complexity_norm):
+    """Single source of truth for 'how long does this one edge take to
+    drive.' The ETA metric, the Carrier's internal fire-clock, and the
+    dashboard's live timer all call this SAME function -- if any of them
+    used a different formula, they'd silently disagree with each other
+    about how long the response actually took."""
+    effective_speed_mps = FIRETRUCK_SPEED_MPS * edge_speed_factor(risk_norm, complexity_norm)
+    return distance_m / effective_speed_mps
+
+
+def route_travel_time_s(route, lookup, normalized):
+    """Total travel time for a full route, accounting for per-edge
+    risk/complexity slowdown -- the real equivalent of
+    route_length(route, lookup) / FIRETRUCK_SPEED_MPS, which assumed a
+    flat speed the whole way."""
+    total = 0.0
+    for i in range(len(route) - 1):
+        edge = (route[i], route[i + 1])
+        edge_info = lookup.get(edge)
+        if not edge_info:
+            continue
+        _d_norm, r_norm, c_norm = normalized.get(edge, (0.0, 0.0, 0.0))
+        total += edge_travel_time_s(edge_info["distance_m"], r_norm, c_norm)
+    return total
+
+
+def build_normalized_attributes(lookup):
+    """Single source of truth for turning raw edge fields (distance_m,
+    risk_score, turn_complexity_deg) into normalized D/R/C values. Used
+    by the routing algorithm itself, AND reused by dashboard.py so its
+    live timer computes travel time with the exact same normalization
+    the algorithm actually used -- not a separately re-derived copy that
+    could quietly drift out of sync."""
+    raw_attrs = {
+        (u, v): EdgeAttributes(
+            distance=e["distance_m"],
+            risk=e.get("risk_score") or 5,
+            turn_angle=e.get("turn_complexity_deg", 0),
+        )
+        for (u, v), e in lookup.items()
+    }
+    return normalize_edge_attributes(raw_attrs)
+
 # Total simulated wall-clock time the fire is allowed to grow across the
 # whole scouting phase, used as the default for scouting_phase_duration_s
 # below. Exposed as a module-level constant (rather than just a default
@@ -118,6 +180,37 @@ def compute_baseline_corridor_edges(nodes, lookup, start, target, hop_radius=1):
         if u in corridor_nodes and v in corridor_nodes:
             corridor_edges.add((u, v))
     return corridor_edges
+
+
+def build_distance_graph(lookup):
+    """Undirected graph weighted by raw edge distance (m). Built once and
+    reused for every shortest-path-length query in a run."""
+    G = nx.Graph()
+    for (u, v), e in lookup.items():
+        G.add_edge(u, v, weight=e["distance_m"])
+    return G
+
+
+def shortest_path_length_m(G, start, target, hazard_by_edge=None):
+    """Length (m) of the shortest start->target path by raw distance.
+
+    hazard_by_edge=None  -> hazard-blind (pure graph shortest path).
+    hazard_by_edge=dict  -> edges currently IMPASSABLE are treated as absent,
+                            i.e. the shortest path that is actually passable
+                            right now.
+    Returns None if no such path exists."""
+    if hazard_by_edge is None:
+        weight = "weight"
+    else:
+        def weight(u, v, d):
+            # Returning None makes networkx skip the edge entirely.
+            if hazard_by_edge.get((u, v)) == HazardTier.IMPASSABLE:
+                return None
+            return d["weight"]
+    try:
+        return nx.shortest_path_length(G, start, target, weight=weight)
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return None
 
 
 def pick_random_hazard_edges(lookup, count, corridor_edges=None, exclude_nodes=(), seed=None):
@@ -225,9 +318,77 @@ def run_full_simulation(
     num_scouts,
     num_carriers,
     max_steps_per_scout=None,
-    alpha=0.7, beta=1.0,          # ALPHA lowered to 0.5 to encourage spreading out
+    # alpha/beta/confidence_fraction tuned via a 2-round parameter sweep
+    # (60 combos x 10 trials, then a narrower 30 combos x 20 trials follow-up)
+    # against the real Baseco graph. confidence_fraction turned out to be
+    # the dominant lever -- alpha=2.0 sits in a comfortable plateau of
+    # top performers (not the extreme tested ceiling of 2.5, to avoid
+    # overfitting to this one graph's specific topology) at 100% reliable
+    # 3-route verification, averaging ~16 scouts instead of the old
+    # defaults' much slower convergence.
+    alpha=2.0, beta=1.0,
     delta_tau_plus=1.0, delta_tau_minus=1.0,
-    confidence_fraction=0.04,     # Tc = confidence_fraction * num_scouts (kept at 0.05)
+    confidence_fraction=0.02,     # Tc = confidence_fraction * num_scouts --
+                                   # Tc=2 at num_scouts=100: still requires
+                                   # genuine 2-scout corroboration (unlike
+                                   # Tc=1, which verifies on a single
+                                   # unconfirmed pass and isn't real
+                                   # "confidence"), while being dramatically
+                                   # faster than the old 0.05 default
+    warmup_scouts=10,             # No route may verify before this many
+                                   # Scouts have run, even if it already
+                                   # hit confidence_threshold. Chosen via a
+                                   # dedicated sweep (run_warmup_tuning_sweep.py)
+                                   # after a strategy comparison showed
+                                   # verifying immediately (warmup_scouts=0,
+                                   # the old behavior) tends to lock onto
+                                   # whichever route a couple of early
+                                   # Scouts happen to agree on -- not
+                                   # necessarily a GOOD one. A mandatory
+                                   # exploration head start before anything
+                                   # can lock in cut the resulting route
+                                   # length by ~33% on the real graph. The
+                                   # sweep found no statistically meaningful
+                                   # difference across warmup_scouts 5-50,
+                                   # so 10 was picked as the cheapest value
+                                   # in that flat, equally-good range.
+    max_verified_length_ratio=2.0,  # a route that clears confidence_threshold
+                                     # (post-warmup) is only ACCEPTED into
+                                     # verified_routes if its length is <=
+                                     # this many times the BASELINE length
+                                     # chosen by `length_baseline` below. It
+                                     # still gets pivoted away either way
+                                     # (see below) -- rejection only
+                                     # withholds the "one of the final 3"
+                                     # status, it never skips the pivot, or
+                                     # the swarm would just keep
+                                     # re-verifying the same long route
+                                     # forever instead of moving on. This is
+                                     # a second, independent safeguard from
+                                     # warmup_scouts above: warmup delays
+                                     # the FIRST lock-in; this one keeps
+                                     # filtering every lock-in attempt after
+                                     # that, in case a long route still wins
+                                     # the popularity race post-warmup.
+    length_baseline="hazard_aware",  # what max_verified_length_ratio is
+                                        # measured AGAINST:
+                                        #   "graph_shortest" -- fixed
+                                        #     shortest start->target
+                                        #     path by raw distance, ignoring
+                                        #     hazards. Computed once.
+                                        #   "hazard_aware" (default) -- shortest
+                                        #     start->target path that avoids
+                                        #     edges currently IMPASSABLE
+                                        #     (fire / random hazards);
+                                        #     recomputed at each check, so
+                                        #     the baseline tracks the fire.
+                                        #   "best_so_far" -- legacy: the
+                                        #     shortest route the Scouts have
+                                        #     discovered so far (moving
+                                        #     baseline).
+                                        # If the chosen baseline has no
+                                        # path (e.g. start/target cut off),
+                                        # it falls back to "best_so_far".
     start_node=None, target_node=None,
     fire_origin_x=None, fire_origin_y=None,
     spread_rate_mps=0.5,
@@ -247,15 +408,7 @@ def run_full_simulation(
     if max_steps_per_scout is None:
         max_steps_per_scout = max(800, len(nodes) * 4)
 
-    raw_attrs = {
-        (u, v): EdgeAttributes(
-            distance=e["distance_m"],
-            risk=e.get("risk_score") or 5,
-            turn_angle=e.get("turn_complexity_deg", 0),
-        )
-        for (u, v), e in lookup.items()
-    }
-    normalized = normalize_edge_attributes(raw_attrs)
+    normalized = build_normalized_attributes(lookup)
 
     largest_nodes, num_components = get_largest_component_nodes(adj)
 
@@ -278,7 +431,19 @@ def run_full_simulation(
         time_per_iteration_s=time_step_s,
     )
 
+    if length_baseline not in ("graph_shortest", "hazard_aware", "best_so_far"):
+        raise ValueError(
+            f"length_baseline must be 'graph_shortest', 'hazard_aware' or "
+            f"'best_so_far', got {length_baseline!r}"
+        )
+
     corridor_edges = compute_baseline_corridor_edges(nodes, lookup, start_node, target_node, hop_radius=1)
+
+    # Distance graph for the length-quality gate. The hazard-blind shortest
+    # length never changes during a run, so compute it once up front.
+    distance_graph = build_distance_graph(lookup)
+    graph_shortest_length_m = shortest_path_length_m(distance_graph, start_node, target_node)
+
     random_hazard_edges = pick_random_hazard_edges(
         lookup, num_random_hazards, corridor_edges=corridor_edges,
         exclude_nodes={start_node, target_node}, seed=random_hazard_seed,
@@ -298,10 +463,22 @@ def run_full_simulation(
     zeroed_edges = set()  # edges belonging to verified routes, permanently pinned to 0.0
     verified_routes = []
     verified_routes_seen = set()
+    # Every route that's been EVALUATED for verification (accepted or
+    # rejected-for-length) -- distinct from verified_routes_seen, since a
+    # route can be evaluated-and-rejected without ever becoming "verified".
+    # Needed because the >= check below (not ==) means a route sitting at
+    # or above confidence_threshold would otherwise re-enter this block on
+    # every subsequent Scout that happens to repeat it, double-counting
+    # routes_rejected_for_length each time instead of once per route.
+    pivoted_routes_seen = set()
     early_termination = False
 
     scouts_reached_target = 0
     scouts_no_path = 0
+    routes_rejected_for_length = 0  # count of Tc-hits (post-warmup) pivoted
+                                     # away but NOT accepted into
+                                     # verified_routes, for too-long a path
+                                     # -- diagnostic only
     scouts_step_budget = 0
     edges_blocked_final = 0
     scouts_run = 0
@@ -348,16 +525,59 @@ def run_full_simulation(
             # out among other scouts exploring different routes.
             route_visit_counts[route_key] = route_visit_counts.get(route_key, 0) + 1
 
-            if route_visit_counts[route_key] == confidence_threshold:
-                if route_key not in verified_routes_seen:
+            # `>=` (not `==`): a route whose visit count already cleared
+            # confidence_threshold DURING warmup must still be eligible
+            # to verify once warmup ends -- with a strict `==` check it
+            # would be permanently skipped the instant the count ticks
+            # past the threshold, since it can never equal it again.
+            # Gated on pivoted_routes_seen (not verified_routes_seen) so a
+            # route that gets rejected for length below is still only
+            # evaluated once, not re-tried on every later repeat.
+            if (
+                route_visit_counts[route_key] >= confidence_threshold
+                and scouts_run > warmup_scouts
+                and route_key not in pivoted_routes_seen
+            ):
+                pivoted_routes_seen.add(route_key)
+
+                # Accept into the final 3 only if it isn't drastically
+                # longer than the baseline selected by `length_baseline`
+                # (default: the true shortest start->target path, NOT the
+                # best route the Scouts happened to find so far).
+                if length_baseline == "graph_shortest":
+                    baseline_length_m = graph_shortest_length_m
+                elif length_baseline == "hazard_aware":
+                    baseline_length_m = shortest_path_length_m(
+                        distance_graph, start_node, target_node, hazard_by_edge,
+                    )
+                else:
+                    baseline_length_m = None
+
+                if baseline_length_m is None:
+                    # "best_so_far" mode, or the chosen baseline has no
+                    # path. `discovered_routes` already includes THIS
+                    # route's own length (set above), so in this fallback a
+                    # route that IS the current shortest always passes
+                    # (ratio == 1.0).
+                    baseline_length_m = min(discovered_routes.values())
+
+                is_acceptable_length = length <= baseline_length_m * max_verified_length_ratio
+
+                if is_acceptable_length:
                     verified_routes.append(list(route))
                     verified_routes_seen.add(route_key)
+                else:
+                    routes_rejected_for_length += 1
 
                 # --- COMPLETE PHEROMONE EVAPORATION ---
-                # Completely wipe the pheromones of the verified path to 0.0
-                # and PIN them there (added to zeroed_edges below). This
-                # guarantees scouts won't keep getting funneled back onto an
-                # already-verified route, forcing exploration elsewhere.
+                # Completely wipe the pheromones of this path to 0.0 and PIN
+                # them there (added to zeroed_edges below) -- UNCONDITIONALLY,
+                # regardless of whether it was just accepted or rejected for
+                # length. If a too-long route were left un-pivoted, its
+                # pheromone keeps compounding from the normal reward pass
+                # either way, so it would just clear confidence_threshold
+                # forever, get rejected forever -- the swarm has to be
+                # forced off of it either way for scouting to progress.
                 if len(route) >= 2:
                     for i in range(len(route) - 1):
                         verified_edge = (route[i], route[i + 1])
@@ -431,7 +651,11 @@ def run_full_simulation(
             if edge in random_hazard_edges:
                 return HazardReading(HazardTier.IMPASSABLE)
             edge_info = lookup.get(edge)
-            step_seconds = (edge_info["distance_m"] / FIRETRUCK_SPEED_MPS) if edge_info else time_step_s
+            if edge_info:
+                _d_norm, r_norm, c_norm = normalized.get(edge, (0.0, 0.0, 0.0))
+                step_seconds = edge_travel_time_s(edge_info["distance_m"], r_norm, c_norm)
+            else:
+                step_seconds = time_step_s
             state["elapsed_s"] += step_seconds
             mx, my = midpoints.get(edge, (fire_model.origin_x, fire_model.origin_y))
             tier = fire_model.hazard_tier_for_point(mx, my, state["elapsed_s"])
@@ -538,7 +762,7 @@ def run_full_simulation(
                 )
 
     final_fire_radius_m = fire_model.radius_at((scouts_run / num_scouts) * scouting_phase_duration_s)
-    eta_seconds = (best_length / FIRETRUCK_SPEED_MPS) if best_route else None
+    eta_seconds = route_travel_time_s(best_route, lookup, normalized) if best_route else None
 
     avg_distance_pct = avg_complexity_pct = avg_risk_pct = None
     if best_route:
@@ -563,6 +787,10 @@ def run_full_simulation(
         "num_components": num_components,
         "scouts_reached_target": scouts_reached_target,
         "scouts_no_path": scouts_no_path,
+        "routes_rejected_for_length": routes_rejected_for_length,
+        "max_verified_length_ratio": max_verified_length_ratio,
+        "length_baseline": length_baseline,
+        "graph_shortest_length_m": graph_shortest_length_m,
         "scouts_step_budget": scouts_step_budget,
         "max_steps_per_scout": max_steps_per_scout,
         "scouts_run": scouts_run,

@@ -10,12 +10,65 @@ from simulation_backend import (
     load_graph, build_adjacency, build_edge_lookup, get_largest_component_nodes,
     nearest_node, compute_baseline_corridor_edges, pick_random_hazard_edges,
     DEFAULT_SCOUTING_PHASE_DURATION_S,
+    build_normalized_attributes, edge_travel_time_s,
 )
 from plotting import (
     plot_graph_with_route, plot_preview, plot_scout_progress,
     create_scout_canvas, update_scout_frame,
     create_carrier_canvas, update_carrier_frame,
+    plot_attribute_heatmap,
 )
+
+MAP_VIEW_OPTIONS = {
+    "Normal": None,
+    "Distance (D)": "distance",
+    "Structural Risk (R)": "risk",
+    "Path Complexity (C)": "complexity",
+}
+
+# Interactive (pan/zoom/drag) maps need two extra packages:
+#     pip install folium streamlit-folium
+# If they're not installed -- or anything goes wrong building/showing the
+# interactive map -- the dashboard silently falls back to the original
+# matplotlib maps (with a visible note), so it never ends up with no map.
+try:
+    from streamlit_folium import st_folium
+    import folium_map
+    INTERACTIVE_MAP_AVAILABLE = folium_map.FOLIUM_AVAILABLE
+except ImportError:
+    st_folium = None
+    folium_map = None
+    INTERACTIVE_MAP_AVAILABLE = False
+
+USE_INTERACTIVE_MAP = True   # set False to force the old matplotlib maps
+MAP_HEIGHT_PX = 560
+
+
+def _render_folium(m, key):
+    # returned_objects=[] stops panning/zooming from triggering a Streamlit
+    # rerun of the whole dashboard on every mouse movement.
+    try:
+        st_folium(m, height=MAP_HEIGHT_PX, use_container_width=True,
+                  returned_objects=[], key=key)
+    except TypeError:
+        # older streamlit-folium without use_container_width
+        st_folium(m, height=MAP_HEIGHT_PX, width=1000,
+                  returned_objects=[], key=key)
+
+
+def show_map(build_interactive, build_static, key):
+    """Show the interactive Folium map if available, else the static
+    matplotlib figure. Both builders are passed as callables so only the
+    one actually needed ever gets built."""
+    if USE_INTERACTIVE_MAP and INTERACTIVE_MAP_AVAILABLE:
+        try:
+            _render_folium(build_interactive(), key)
+            st.caption("Interactive map: scroll to zoom, drag to pan, hover a road or route for details.")
+            return
+        except Exception as exc:
+            st.warning(f"Interactive map unavailable ({type(exc).__name__}: {exc}) -- showing the static map instead.")
+    fig = build_static()
+    st.pyplot(fig, width='stretch'); plt.close(fig)
 
 GRAPH_FILE = "baseco_osm_graph_scored.json"
 STATION_X, STATION_Y = latlon_to_utm(FIRE_STATION_LAT, FIRE_STATION_LON)
@@ -39,14 +92,34 @@ def load_graph_for_preview(path):
 
 @st.cache_data
 def load_graph_structures(path):
-    """Adjacency/edge-lookup/largest-component data, precomputed once and
-    cached -- the same shape of data run_full_simulation builds internally,
-    reused here so the preview can mirror its hazard-picking logic exactly."""
+    """Adjacency/edge-lookup/largest-component/normalized-D-R-C data,
+    precomputed once and cached -- the same shape of data
+    run_full_simulation builds internally, reused here so the preview
+    mirrors its hazard-picking AND travel-time logic exactly."""
     nodes, edges = load_graph(path)
     adj = build_adjacency(edges)
     lookup = build_edge_lookup(edges)
     largest_nodes, num_components = get_largest_component_nodes(adj)
-    return nodes, lookup, largest_nodes
+    normalized = build_normalized_attributes(lookup)
+    return nodes, lookup, largest_nodes, normalized
+
+
+@st.cache_data
+def get_start_node_xy(path):
+    """UTM coords of the actual routable node nearest the fire station --
+    for placing the Start marker ON the road network it will route from.
+    STATION_X/STATION_Y are the fire station's real-world GPS position,
+    which can sit a short gap away from the nearest point a route can
+    actually begin at (no road runs exactly through the building), so a
+    marker placed at the raw coordinates can visibly float off the map's
+    road lines instead of sitting on the node routing uses. The result map
+    (build_route_map) already avoids this by marking the route's own first
+    point instead of the raw station coords; this gives the preview and
+    heatmap maps -- which don't have a route to borrow a point from -- the
+    same fix."""
+    nodes, _lookup, largest_nodes, _normalized = load_graph_structures(path)
+    start_node = nearest_node(nodes, STATION_X, STATION_Y, largest_nodes)
+    return nodes[start_node]["utm_x"], nodes[start_node]["utm_y"]
 
 
 def compute_preview_hazards(fire_x, fire_y, num_random_hazards, seed):
@@ -57,7 +130,7 @@ def compute_preview_hazards(fire_x, fire_y, num_random_hazards, seed):
     position, hazard count, and seed haven't changed since."""
     if num_random_hazards <= 0:
         return set()
-    nodes, lookup, largest_nodes = load_graph_structures(GRAPH_FILE)
+    nodes, lookup, largest_nodes, _normalized = load_graph_structures(GRAPH_FILE)
     target_node = nearest_node(nodes, fire_x, fire_y, largest_nodes)
     start_node = nearest_node(nodes, STATION_X, STATION_Y, largest_nodes)
     corridor_edges = compute_baseline_corridor_edges(nodes, lookup, start_node, target_node, hop_radius=1)
@@ -635,6 +708,15 @@ def render_dashboard():
         # of the map instead of as a block element that gets pushed down.
         canvas_wrapper = st.container(key="canvas_wrapper")
         with canvas_wrapper:
+            # D/R/C heatmap toggle -- purely a display choice, doesn't touch
+            # the simulation or the Run flow at all. Only affects the static
+            # preview/result map below; the live Scout/Carrier animation
+            # keeps the normal road-type rendering regardless of this.
+            map_view_label = st.radio(
+                "Map view", list(MAP_VIEW_OPTIONS.keys()),
+                horizontal=True, key="map_view_toggle", label_visibility="collapsed",
+            )
+            map_view = MAP_VIEW_OPTIONS[map_view_label]
             canvas_slot = st.empty()  # reserved now, filled in further down
             loading_slot = st.empty()  # the "Scouts exploring..." overlay lives here
 
@@ -643,6 +725,10 @@ def render_dashboard():
         min_x, max_x, min_y, max_y = get_graph_bounds(GRAPH_FILE)
         fire_x = min_x + (fire_x_pct / 100) * (max_x - min_x)
         fire_y = min_y + (fire_y_pct / 100) * (max_y - min_y)
+        # Snapped onto the road network -- see get_start_node_xy's
+        # docstring for why this (not the raw STATION_X/STATION_Y) is
+        # what the preview/heatmap maps' Start marker should use.
+        start_node_x, start_node_y = get_start_node_xy(GRAPH_FILE)
 
         if run_clicked:
             weight_sum = dist_w + complexity_w + risk_w
@@ -753,7 +839,7 @@ def render_dashboard():
                 # Edge-distance lookup, reused to compute each Carrier's real
                 # cumulative distance traveled along ITS committed route --
                 # same lookup shape run_full_simulation builds internally.
-                _, carrier_edge_lookup, _ = load_graph_structures(GRAPH_FILE)
+                _, carrier_edge_lookup, _, carrier_normalized = load_graph_structures(GRAPH_FILE)
 
                 def on_carrier(carrier_id, carrier_number, num_carriers, rank, route,
                                 current_node, step, total_steps, status,
@@ -783,20 +869,25 @@ def render_dashboard():
                     with canvas_slot.container():
                         st.pyplot(carrier_fig, width='stretch')
 
-                    # Real simulated travel time: distance actually covered so
-                    # far along THIS Carrier's committed route, at the fixed
-                    # firetruck speed -- the exact same distance/speed formula
-                    # the ETA metric uses. When a Carrier following the best
-                    # (rank-1) route reaches the target, this value equals that
-                    # route's eta_seconds exactly, since both reduce to
-                    # best_length / FIRETRUCK_SPEED_MPS for the same route.
+                    # Real simulated travel time: summed edge-by-edge along
+                    # the distance actually covered so far on THIS Carrier's
+                    # committed route, using the SAME risk/complexity-aware
+                    # edge_travel_time_s() the ETA metric and the Carrier's
+                    # internal fire-clock both use -- not a flat-speed
+                    # shortcut, since a truck moving through a risky or
+                    # narrow stretch is slower than one on an easy street.
+                    # When a Carrier following the best (rank-1) route
+                    # reaches the target, this value equals that route's
+                    # eta_seconds exactly, since both sum the same per-edge
+                    # formula over the same route.
                     if timer_state["frozen_at"] is None and current_node in route:
                         idx = route.index(current_node)
-                        traveled_m = sum(
-                            carrier_edge_lookup[(route[i], route[i + 1])]["distance_m"]
-                            for i in range(idx)
-                        )
-                        simulated_elapsed_s = traveled_m / FIRETRUCK_SPEED_MPS
+                        simulated_elapsed_s = 0.0
+                        for i in range(idx):
+                            edge = (route[i], route[i + 1])
+                            edge_info = carrier_edge_lookup[edge]
+                            _d_norm, r_norm, c_norm = carrier_normalized.get(edge, (0.0, 0.0, 0.0))
+                            simulated_elapsed_s += edge_travel_time_s(edge_info["distance_m"], r_norm, c_norm)
                         if status == "reached":
                             # Freeze the instant the FIRST Carrier reports
                             # "reached" -- every callback after this one is ignored.
@@ -875,9 +966,33 @@ def render_dashboard():
             render_timer(timer_slot)
 
         with canvas_slot.container():
-            if result_matches_sliders and results["success"]:
-                fig = plot_graph_with_route(results)
-                st.pyplot(fig, width='stretch'); plt.close(fig)
+            if map_view is not None:
+                nodes, edges = load_graph_for_preview(GRAPH_FILE)
+                preview_hazard_edges = compute_preview_hazards(
+                    fire_x, fire_y,
+                    num_random_hazards if enable_random_hazards else 0,
+                    st.session_state["hazard_seed"],
+                )
+                show_map(
+                    lambda: folium_map.build_attribute_heatmap_map(
+                        nodes, edges, map_view,
+                        fire_xy=(fire_x, fire_y), start_xy=(start_node_x, start_node_y),
+                        hazard_edges=preview_hazard_edges,
+                    ),
+                    lambda: plot_attribute_heatmap(
+                        nodes, edges, map_view,
+                        fire_xy=(fire_x, fire_y), start_xy=(start_node_x, start_node_y),
+                        hazard_edges=preview_hazard_edges,
+                    ),
+                    key=f"map_heat_{map_view}",
+                )
+                st.caption(f"Showing {map_view_label} per edge -- the same raw values the routing algorithm uses internally.")
+            elif result_matches_sliders and results["success"]:
+                show_map(
+                    lambda: folium_map.build_route_map(results),
+                    lambda: plot_graph_with_route(results),
+                    key="map_result",
+                )
             else:
                 nodes, edges = load_graph_for_preview(GRAPH_FILE)
                 preview_hazard_edges = compute_preview_hazards(
@@ -885,8 +1000,17 @@ def render_dashboard():
                     num_random_hazards if enable_random_hazards else 0,
                     st.session_state["hazard_seed"],
                 )
-                fig = plot_preview(nodes, edges, (fire_x, fire_y), (STATION_X, STATION_Y), hazard_edges=preview_hazard_edges)
-                st.pyplot(fig, width='stretch'); plt.close(fig)
+                show_map(
+                    lambda: folium_map.build_preview_map(
+                        nodes, edges, (fire_x, fire_y), (start_node_x, start_node_y),
+                        hazard_edges=preview_hazard_edges,
+                    ),
+                    lambda: plot_preview(
+                        nodes, edges, (fire_x, fire_y), (start_node_x, start_node_y),
+                        hazard_edges=preview_hazard_edges,
+                    ),
+                    key="map_preview",
+                )
                 if results is not None and not result_matches_sliders:
                     st.caption("Sliders have moved since the last run -- click Run to simulate at this new position.")
                 elif results is not None and not results["success"]:

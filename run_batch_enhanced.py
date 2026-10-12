@@ -25,11 +25,25 @@ W2 = 0.40          # structural risk weight
 W3 = 0.20          # complexity / turn weight
 RHO_MIN = 0.10
 RHO_MAX = 0.50
-ALPHA = 1.0
+# alpha/confidence_fraction below match simulation_backend.py's own tuned
+# defaults (from its 2-round parameter sweep against the real Baseco graph)
+# rather than the dashboard's pre-sweep values -- declared explicitly here
+# (not left to the backend's defaults) so every trial's parameters are
+# self-documenting from this script alone, and won't silently drift if the
+# backend's defaults change later.
+ALPHA = 2.0
 BETA = 1.0
 DELTA_TAU_PLUS = 1.0
 DELTA_TAU_MINUS = 1.0
-CONFIDENCE_FRACTION = 0.05
+CONFIDENCE_FRACTION = 0.02
+WARMUP_SCOUTS = 10              # no route may verify before this many
+                                 # Scouts have run -- see simulation_backend's
+                                 # own comment for why (prevents locking onto
+                                 # whichever route 1-2 early Scouts agree on)
+MAX_VERIFIED_LENGTH_RATIO = 1.5  # a route is only accepted as one of the
+                                  # final 3 if its length is <= this many
+                                  # times the shortest route discovered so
+                                  # far in that trial
 
 ENABLE_FIRE = True
 SPREAD_RATE_MPS = 1.0 / 60          # 1.0 m/min → m/s (matches dashboard default)
@@ -57,6 +71,8 @@ def run_one_trial(trial_id: int, seed: int):
         delta_tau_plus=DELTA_TAU_PLUS,
         delta_tau_minus=DELTA_TAU_MINUS,
         confidence_fraction=CONFIDENCE_FRACTION,
+        warmup_scouts=WARMUP_SCOUTS,
+        max_verified_length_ratio=MAX_VERIFIED_LENGTH_RATIO,
         enable_fire=ENABLE_FIRE,
         spread_rate_mps=SPREAD_RATE_MPS,
         num_random_hazards=NUM_RANDOM_HAZARDS,
@@ -75,7 +91,19 @@ def run_one_trial(trial_id: int, seed: int):
         "success": result["success"],
         "eta_seconds": result.get("eta_seconds"),
         "best_length_m": result.get("best_length_m"),
-        "num_verified_routes": len(result.get("top_routes", [])),
+        "num_verified_routes": len(result.get("top_routes", [])),  # always
+            # <=3, padded with the shortest discovered routes if fewer than
+            # 3 genuinely cleared confidence_threshold -- kept for backward
+            # compatibility with existing analysis of this column.
+        "num_true_verified_routes": result.get("num_true_verified_routes"),  # the
+            # GENUINE count that cleared confidence_threshold before any
+            # padding, i.e. the number this trial actually earned.
+        "routes_rejected_for_length": result.get("routes_rejected_for_length"),  # how
+            # many times a route cleared confidence_threshold but was
+            # rejected from the final 3 for being too long relative to the
+            # shortest route found -- worth watching per Option 2's tuning:
+            # if this is high and num_true_verified_routes is low, your
+            # max_verified_length_ratio is probably too strict for this graph.
         "scouts_reached_target": result.get("scouts_reached_target"),
         "scouts_run": result.get("scouts_run"),
         "scouts_no_path": result.get("scouts_no_path"),
@@ -104,6 +132,10 @@ def main():
     print(f"Carriers       : {NUM_CARRIERS}")
     print(f"Weights (D/R/C): {W1} / {W2} / {W3}")
     print(f"ρ range        : {RHO_MIN} – {RHO_MAX}")
+    print(f"Alpha / Beta   : {ALPHA} / {BETA}")
+    print(f"Confidence frac: {CONFIDENCE_FRACTION}")
+    print(f"Warmup scouts  : {WARMUP_SCOUTS}")
+    print(f"Max verif. ratio: {MAX_VERIFIED_LENGTH_RATIO}")
     print(f"Random hazards : {NUM_RANDOM_HAZARDS}")
     print(f"Fire enabled   : {ENABLE_FIRE}")
     print("=" * 60)
@@ -137,6 +169,8 @@ def main():
         "eta_seconds",
         "best_length_m",
         "num_verified_routes",
+        "num_true_verified_routes",
+        "routes_rejected_for_length",
         "scouts_reached_target",
         "carrier_successes",
         "carrier_success_rate",
