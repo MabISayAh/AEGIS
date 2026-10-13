@@ -111,7 +111,7 @@ def render_dispatch_analytics():
     }
 
     .stApp {
-        background-color: #FAFAFA;
+        background-color: #000000;
     }
 
     [data-testid="stHeader"] { display: none !important; }
@@ -121,8 +121,8 @@ def render_dispatch_analytics():
     .top-window-bar {
         position: fixed;
         top: 0; left: 0; width: 100%; height: 35px;
-        background-color: #E4E5F1;
-        border-bottom: 1px solid #cbd5e1;
+        background-color: #121212;
+        border-bottom: 1px solid #000000;
         z-index: 99999;
         display: flex;
         align-items: center;
@@ -152,14 +152,14 @@ def render_dispatch_analytics():
         background-color: transparent !important;
         border: none !important;
         box-shadow: none !important;
-        color: #3E3F49 !important;
+        color: #FFFFFF !important;
         font-weight: 800 !important;
         font-size: 16px !important;
         padding: 0 !important;
     }
     .st-key-close_analytics_btn button:hover,
     .st-key-close_analytics_btn button:hover * {
-        color: #000000 !important;
+        color: ##989898 !important;
         background-color: transparent !important;
     }
 
@@ -167,7 +167,7 @@ def render_dispatch_analytics():
     .analytics-title {
         font-size: 48px;
         font-weight: 800;
-        color: #477B9E;
+        color: #FFFFFF;
         text-align: center;
         letter-spacing: 1px;
         margin: 5px 0 15px 0;
@@ -176,8 +176,8 @@ def render_dispatch_analytics():
     /* Generic card: header + body, single shadow, white divider line between
        them — same pattern as .custom-panel on the Dashboard */
     .analytics-panel {
-        background-color: #E4E5F1;
-        border: 1px solid #D1D5E0;
+        background-color: #121212;
+        border: 1px solid #000000;
         border-radius: 8px;
         overflow: hidden;
         box-shadow: 0px 2px 2px rgba(0, 0, 0, 0.15);
@@ -188,8 +188,8 @@ def render_dispatch_analytics():
         padding: 10px 18px;
         font-size: 15px;
         font-weight: 600;
-        color: #3E3F49;
-        border-bottom: 1px solid #FFFFFF;
+        color: #FFFFFF;
+        border-bottom: 1px solid #000000;
     }
     .analytics-panel-body {
         padding: 18px;
@@ -197,12 +197,12 @@ def render_dispatch_analytics():
     .analytics-panel-value {
         font-size: 34px;
         font-weight: 700;
-        color: #477B9E;
+        color: #005791;
     }
 
     /* Green callout banner */
     .analytics-callout {
-        background-color: #60CE56;
+        background-color: #10C600;
         border-radius: 8px;
         padding: 12px 20px;
         display: flex;
@@ -219,7 +219,7 @@ def render_dispatch_analytics():
     .analytics-callout-text {
         font-size: 15px;
         font-weight: 600;
-        color: #1E1E1E;
+        color: #121313;
     }
 
     /* Progress-bar row: label + value on top, bar underneath */
@@ -238,12 +238,12 @@ def render_dispatch_analytics():
     .analytics-bar-label {
         font-size: 15px;
         font-weight: 600;
-        color: #3E3F49;
+        color: #FFFFFF;
     }
     .analytics-bar-value {
         font-size: 15px;
         font-weight: 700;
-        color: #477B9E;
+        color: #005791;
     }
 
     /* Right-hand stat list rows, divided by white lines */
@@ -252,7 +252,7 @@ def render_dispatch_analytics():
         justify-content: space-between;
         align-items: center;
         padding: 12px 18px;
-        border-bottom: 1px solid #FFFFFF;
+        border-bottom: 1px solid #000000;
     }
     .analytics-stat-row:last-child {
         border-bottom: none;
@@ -260,12 +260,12 @@ def render_dispatch_analytics():
     .analytics-stat-label {
         font-size: 15px;
         font-weight: 600;
-        color: #3E3F49;
+        color: #FFFFFF;
     }
     .analytics-stat-value {
         font-size: 15px;
         font-weight: 700;
-        color: #477B9E;
+        color: #005791;
     }
 
     /* Two-column row helper */
@@ -333,7 +333,7 @@ def render_dispatch_analytics():
     <div class="analytics-callout">
         <svg class="analytics-callout-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="13" r="9" fill="#1E1E1E"/>
-            <path d="M12 8v5l3.5 2" stroke="#60CE56" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M12 8v5l3.5 2" stroke="#10C600" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
         <span class="analytics-callout-text">{results['callout_text']}</span>
     </div>
@@ -348,14 +348,14 @@ def render_dispatch_analytics():
                     <span class="analytics-bar-label">This simulation</span>
                     <span class="analytics-bar-value">{results['total_transit_time']}</span>
                 </div>
-                {_progress_bar(results['this_sim_pct'], "#477B9E", height="12px")}
+                {_progress_bar(results['this_sim_pct'], "#0098FF", height="12px")}
             </div>
             <div class="analytics-bar-row">
                 <div class="analytics-bar-row-top">
                     <span class="analytics-bar-label">BFP Benchmark</span>
                     <span class="analytics-bar-value">{results['bfp_benchmark_time']}</span>
                 </div>
-                {_progress_bar(results['bfp_benchmark_pct'], "#B4B4B4", height="12px")}
+                {_progress_bar(results['bfp_benchmark_pct'], "#FF8000", height="12px")}
             </div>
         </div>
     </div>
@@ -373,21 +373,21 @@ def render_dispatch_analytics():
                             <span class="analytics-bar-label">Path Distance</span>
                             <span class="analytics-bar-value">{results['path_distance_pct']}%</span>
                         </div>
-                        {_progress_bar(results['path_distance_pct'], "#FF6F6F", height="8px")}
+                        {_progress_bar(results['path_distance_pct'], "#E40000", height="8px")}
                     </div>
                     <div class="analytics-bar-row">
                         <div class="analytics-bar-row-top">
                             <span class="analytics-bar-label">Path Complexity</span>
                             <span class="analytics-bar-value">{results['path_complexity_pct']}%</span>
                         </div>
-                        {_progress_bar(results['path_complexity_pct'], "#FFE17D", height="8px")}
+                        {_progress_bar(results['path_complexity_pct'], "#FFC400", height="8px")}
                     </div>
                     <div class="analytics-bar-row">
                         <div class="analytics-bar-row-top">
                             <span class="analytics-bar-label">Structural Risk</span>
                             <span class="analytics-bar-value">{results['structural_risk_pct']}%</span>
                         </div>
-                        {_progress_bar(results['structural_risk_pct'], "#477B9E", height="8px")}
+                        {_progress_bar(results['structural_risk_pct'], "#0098FF", height="8px")}
                     </div>
                 </div>
             </div>

@@ -19,13 +19,6 @@ from plotting import (
     plot_attribute_heatmap,
 )
 
-MAP_VIEW_OPTIONS = {
-    "Normal": None,
-    "Distance (D)": "distance",
-    "Structural Risk (R)": "risk",
-    "Path Complexity (C)": "complexity",
-}
-
 # Interactive (pan/zoom/drag) maps need two extra packages:
 #     pip install folium streamlit-folium
 # If they're not installed -- or anything goes wrong building/showing the
@@ -34,14 +27,21 @@ MAP_VIEW_OPTIONS = {
 try:
     from streamlit_folium import st_folium
     import folium_map
+    import replay_map
     INTERACTIVE_MAP_AVAILABLE = folium_map.FOLIUM_AVAILABLE
 except ImportError:
     st_folium = None
     folium_map = None
+    replay_map = None
     INTERACTIVE_MAP_AVAILABLE = False
 
 USE_INTERACTIVE_MAP = True   # set False to force the old matplotlib maps
-MAP_HEIGHT_PX = 560
+# Replay each Run (Scouts exploring, then fire trucks driving) on the
+# interactive map instead of the live matplotlib animation. Needs the same
+# two packages; False = the old live matplotlib animation.
+USE_INTERACTIVE_REPLAY = True
+REPLAY_HEIGHT_PX = 640
+MAP_HEIGHT_PX = REPLAY_HEIGHT_PX   # preview / result maps match the replay map's size
 
 
 def _render_folium(m, key):
@@ -54,6 +54,48 @@ def _render_folium(m, key):
         # older streamlit-folium without use_container_width
         st_folium(m, height=MAP_HEIGHT_PX, width=1000,
                   returned_objects=[], key=key)
+
+
+def _show_html(html, height):
+    # st.components.v1.html was deprecated in Streamlit 1.56 in favour of
+    # st.iframe; use the new one when this Streamlit has it.
+    if hasattr(st, "iframe"):
+        st.iframe(html, height=height)
+    else:
+        import streamlit.components.v1 as components
+        components.html(html, height=height)
+
+
+def _loading_veil(title, sub="", pct=None):
+    """HTML for the loading card shown over the map while a replay-mode Run
+    computes (styled by .sim-veil / .sim-card in the CSS)."""
+    bar = f'<div class="sim-bar"><div style="width:{pct:.0f}%"></div></div>' if pct is not None else ""
+    return (
+        '<div class="sim-veil"><div class="sim-card"><span class="sim-spinner"></span>'
+        f'<div class="sim-text"><div class="sim-title">{title}</div>'
+        f'<div class="sim-sub">{sub}</div>{bar}</div></div></div>'
+    )
+
+
+def show_replay(payload, results, autoplay):
+    """Interactive replay of the finished run. Plays once right after a
+    Run (autoplay); on any later rerun it opens already at the end state, so
+    touching an unrelated widget doesn't restart the animation. If it can't
+    be built or shown, falls back to the final interactive route map."""
+    try:
+        html = replay_map.build_replay_html(
+            payload, results, autoplay=autoplay, start_at_end=not autoplay,
+        )
+        _show_html(html, REPLAY_HEIGHT_PX)
+        st.caption("Replay: pause, scrub or change speed with the controls. Scroll to zoom, drag to pan.")
+        return
+    except Exception as exc:
+        st.warning(f"Replay unavailable ({type(exc).__name__}: {exc}) -- showing the final map instead.")
+    show_map(
+        lambda: folium_map.build_route_map(results),
+        lambda: plot_graph_with_route(results),
+        key="map_result",
+    )
 
 
 def show_map(build_interactive, build_static, key):
@@ -151,10 +193,10 @@ def render_timer(slot, seconds=None):
     slot.markdown(f"""
     <div class="timer-box">
         <svg class="timer-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="12" cy="13" r="8" stroke="#477B9E" stroke-width="2"/>
-            <path d="M12 9v4l3 2" stroke="#477B9E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M9 2h6" stroke="#477B9E" stroke-width="2" stroke-linecap="round"/>
-            <path d="M12 2v3" stroke="#477B9E" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="12" cy="13" r="8" stroke="#007DD1" stroke-width="2"/>
+            <path d="M12 9v4l3 2" stroke="#007DD1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M9 2h6" stroke="#007DD1" stroke-width="2" stroke-linecap="round"/>
+            <path d="M12 2v3" stroke="#007DD1" stroke-width="2" stroke-linecap="round"/>
         </svg>
         <span id="timer-value">{display}</span>
     </div>
@@ -173,7 +215,16 @@ def render_dashboard():
     }
 
     .stApp {
-        background-color: #FAFAFA;
+        background-color: #000000;
+    }
+
+    /* Fade the dashboard in after the loading screen instead of a hard cut. */
+    .block-container {
+        animation: dashboard-fade-in 0.6s ease both;
+    }
+    @keyframes dashboard-fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
     }
 
     [data-testid="stHeader"] {
@@ -190,8 +241,8 @@ def render_dashboard():
     .top-window-bar {
         position: fixed;
         top: 0; left: 0; width: 100%; height: 35px;
-        background-color: #E4E5F1;
-        border-bottom: 1px solid #cbd5e1;
+        background-color: #121212;
+        border-bottom: 1px solid #000000;
         z-index: 99999;
         display: flex;
         align-items: center;
@@ -223,34 +274,34 @@ def render_dashboard():
         background-color: transparent !important;
         border: none !important;
         box-shadow: none !important;
-        color: #477B9E !important;
+        color: #FFFFFF !important;
         font-weight: 800 !important;
         font-size: 16px !important;
         padding: 0 !important;
     }
     .st-key-back_btn button:hover,
     .st-key-back_btn button:hover * {
-        color: #345E7A !important;
+        color: #989898 !important;
         background-color: transparent !important;
     }
 
     /* Panels & Cards */
     .title-box {
-        background-color: #E4E5F1;
-        color: #3E3F49;
+        background-color: #121212;
+        color: #FFFFFF;
         font-size: 24px;
         font-weight: 700;
         text-align: center;
         padding: 10px;
         border-radius: 6px;
-        border: 1px solid #D1D5E0;
+        border: 1px solid #000000;
         margin-bottom: 15px;
         box-shadow: 0px 2px 2px rgba(0, 0, 0, 0.15);
     }
 
     .custom-panel {
-        background-color: #E4E5F1;
-        border: 1px solid #D1D5E0;
+        background-color: #121212;
+        border: 1px solid #000000;
         border-radius: 6px;
         margin-bottom: 15px;
         overflow: hidden;
@@ -258,12 +309,12 @@ def render_dashboard():
     }
 
     .panel-header {
-        background-color: #E4E5F1;
+        background-color: #121212;
         padding: 10px 15px;
         font-weight: 600;
-        color: #3E3F49;
+        color: #FFFFFF;
         font-size: 16px;
-        border-bottom: 1px solid #FFFFFF;
+        border-bottom: 1px solid #000000;
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -271,12 +322,12 @@ def render_dashboard():
 
     .panel-body {
         padding: 15px;
-        background-color: #E4E5F1;
+        background-color: #121212;
     }
 
     .metric-label {
         font-size: 13px;
-        color: #3E3F49;
+        color: #FFFFFF;
         font-weight: 600;
         margin-bottom: 2px;
         margin-top: 10px;
@@ -285,7 +336,7 @@ def render_dashboard():
 
     .metric-value {
         font-size: 14px;
-        color: #477B9E;
+        color: #007DD1;
         font-weight: 500;
         margin-left: 15px;
         margin-bottom: 5px;
@@ -294,7 +345,7 @@ def render_dashboard():
     /* Center Canvas */
     .canvas-placeholder {
         background-color: #F6F4F0;
-        border: 1px solid #E0DED9;
+        border: 1px solid #000000;
         border-radius: 6px;
         height: 610px;
         width: 100%;
@@ -318,7 +369,7 @@ def render_dashboard():
        fixed..." note at the bottom of Parameters. */
     .st-key-params_panel [data-testid="stCaptionContainer"],
     .st-key-params_panel small {
-        color: #3E3F49 !important;
+        color: #FFFFFF !important;
         opacity: 1 !important;
         font-weight: 500 !important;
         font-size: 12px !important;
@@ -392,7 +443,7 @@ def render_dashboard():
         width: 8px;
         height: 8px;
         border-radius: 50%;
-        background-color: #477B9E;
+        background-color: #007DD1;
         flex-shrink: 0;
         animation: running-pulse 1s ease-in-out infinite;
     }
@@ -401,16 +452,74 @@ def render_dashboard():
         50% { opacity: 1; }
     }
 
+    /* --- Smooth map transition (preview -> loading -> replay) ---
+       While a replay-mode Run computes, the preview map stays on screen
+       and this veil (blur + centered card with a progress bar) sits on top
+       of it instead of the map blanking out. Every map iframe fades in
+       when it mounts, so the veil -> replay hand-off isn't a hard cut. */
+    .sim-veil {
+        position: absolute;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(246, 244, 240, 0.55);
+        backdrop-filter: blur(3px);
+        -webkit-backdrop-filter: blur(3px);
+        animation: sim-fade-in 0.35s ease both;
+    }
+    .sim-card {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-width: 280px;
+        background: rgba(250, 250, 250, 0.97);
+        padding: 16px 24px;
+        border-radius: 12px;
+        box-shadow: 0px 4px 16px rgba(0, 0, 0, 0.25);
+    }
+    .sim-spinner {
+        width: 26px;
+        height: 26px;
+        flex-shrink: 0;
+        border: 3px solid rgba(0, 125, 209, 0.25);
+        border-top-color: #007DD1;
+        border-radius: 50%;
+        animation: sim-spin 0.8s linear infinite;
+    }
+    .sim-text { flex: 1; }
+    .sim-title { font-weight: 700; font-size: 15px; color: #3E3F49; }
+    .sim-sub { font-size: 12px; color: #6B6C75; margin-top: 2px; }
+    .sim-bar {
+        height: 5px;
+        margin-top: 8px;
+        border-radius: 3px;
+        background: rgba(0, 125, 209, 0.18);
+        overflow: hidden;
+    }
+    .sim-bar > div {
+        height: 100%;
+        background: #007DD1;
+        border-radius: 3px;
+        transition: width 0.2s ease;
+    }
+    .st-key-canvas_wrapper iframe {
+        animation: sim-fade-in 0.5s ease both;
+    }
+    @keyframes sim-spin { to { transform: rotate(360deg); } }
+    @keyframes sim-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
     /* Simulation Controls block, now stacked in the (narrower) left column
        instead of a horizontal row above the canvas. */
     .st-key-sim_controls_group {
         margin-bottom: 0;
     }
     .st-key-sim_controls_group .control-label-box {
-        background-color: #EAEBF3;
+        background-color: #121212;
         border-radius: 6px;
         padding: 6px 15px;
-        border: 1px solid #D1D5E0;
+        border: 1px solid #000000;
         display: flex;
         align-items: center;
         box-shadow: 0px 2px 2px rgba(0, 0, 0, 0.15);
@@ -419,8 +528,8 @@ def render_dashboard():
 
     /* Bottom Control Bar */
     .control-bar {
-        background-color: #E4E5F1;
-        border: 1px solid #D1D5E0;
+        background-color: #121212;
+        border: 1px solid #000000;
         border-radius: 6px;
         padding: 10px 15px;
         display: flex;
@@ -430,18 +539,18 @@ def render_dashboard():
     .control-label {
         font-size: 16px;
         font-weight: 600;
-        color: #3E3F49;
+        color: #FFFFFF;
     }
 
     /* Right Column Specifics */
     .timer-box {
-        background-color: #E4E5F1;
-        border: 1px solid #D1D5E0;
+        background-color: #121212;
+        border: 1px solid #000000;
         border-radius: 6px;
         text-align: center;
         font-size: 30px;
         font-weight: 600;
-        color: #3E3F49;
+        color: #FFFFFF;
         padding: 15px;
         margin-bottom: 15px;
         box-shadow: 0px 2px 2px rgba(0, 0, 0, 0.15);
@@ -458,9 +567,9 @@ def render_dashboard():
 
     /* Parameters panel body — targets the container via its key */
     .st-key-params_panel {
-        background-color: #E4E5F1 !important;
-        border: 1px solid #D1D5E0;
-        border-top: 1px solid #FFFFFF;
+        background-color: #121212 !important;
+        border: 1px solid #000000;
+        border-top: 1px solid #000000;
         border-radius: 0 0 6px 6px;
         padding: 15px;
     }
@@ -485,40 +594,40 @@ def render_dashboard():
     div[data-testid="stSelectbox"] label *,
     div[data-testid="stSlider"] label * {
         font-size: 13px !important;
-        color: #3E3F49 !important;
+        color: #FFFFFF !important;
         font-weight: 700 !important;
     }
     div[data-testid="stSelectbox"] > div {
         min-height: 32px !important;
     }
 
-    /* --- Recolor Streamlit's default red/orange accent to #477B9E ---
+    /* --- Recolor Streamlit's default red/orange accent to #007DD1 ---
        Newer Streamlit themes read this CSS variable for sliders, focus rings,
        etc, so overriding it is the broadest fix. The explicit selectors below
        are a fallback in case a given element reads a hard-coded color instead. */
     :root {
-        --primary-color: #477B9E;
+        --primary-color: #007DD1;
     }
 
     /* Slider track (the thin bar) and its filled portion */
     div[data-testid="stSlider"] div[data-baseweb="slider"] > div {
-        background-color: #D1D5E0 !important;
+        background-color: #000000 !important;
     }
     div[data-testid="stSlider"] div[data-baseweb="slider"] > div > div {
-        background-color: #477B9E !important;
+        background-color: #007DD1 !important;
     }
     /* Slider thumb (the draggable circle) */
     div[data-testid="stSlider"] [role="slider"] {
-        background-color: #477B9E !important;
-        border-color: #477B9E !important;
+        background-color: #007DD1 !important;
+        border-color: #007DD1 !important;
     }
     /* Slider value label that floats above the thumb while dragging */
     div[data-testid="stSlider"] [data-testid="stThumbValue"] {
-        color: #477B9E !important;
+        color: #007DD1 !important;
     }
     /* Slider tick labels (min/max numbers under the track) */
     div[data-testid="stSlider"] [data-testid="stTickBar"] {
-        color: #3E3F49 !important;
+        color: #FFFFFF !important;
     }
     /* Catch-all: Streamlit's default red accent (#FF4B4B) can show up via inline
        style OR a compiled class depending on version, which the selectors above
@@ -526,10 +635,10 @@ def render_dashboard():
        exact red, wherever/however it's applied, without touching the grey track. */
     div[data-testid="stSlider"] [style*="255, 75, 75"],
     div[data-testid="stSlider"] [style*="ff4b4b" i] {
-        background-color: #477B9E !important;
-        border-color: #477B9E !important;
-        color: #477B9E !important;
-        fill: #477B9E !important;
+        background-color: #007DD1 !important;
+        border-color: #007DD1 !important;
+        color: #007DD1 !important;
+        fill: #007DD1 !important;
     }
 
     /* Button customization — targeted via key, not :contains() (invalid CSS).
@@ -538,7 +647,7 @@ def render_dashboard():
        button only — putting box-shadow on the inner text element as well cast a
        second shadow directly behind the text, causing that ghosting/double look. */
     .st-key-show_analytics_btn button {
-        background-color: #477B9E !important;
+        background-color: #005791 !important;
         color: white !important;
         border: none !important;
         border-radius: 6px !important;
@@ -548,8 +657,8 @@ def render_dashboard():
         font-weight: 700 !important;
     }
     .st-key-run_btn button {
-        background-color: #60CE56 !important;
-        color: black !important;
+        background-color: #10C600 !important;
+        color: #FFFFFF !important;
         border: none !important;
         border-radius: 6px !important;
         box-shadow: 0px 2px 2px rgba(0, 0, 0, 0.15);
@@ -558,8 +667,8 @@ def render_dashboard():
         font-weight: 700 !important;
     }
     .st-key-reset_btn button {
-        background-color: #FF6F6F !important;
-        color: black !important;
+        background-color: #E40000 !important;
+        color: #FFFFFF !important;
         border: none !important;
         border-radius: 6px !important;
         box-shadow: 0px 2px 2px rgba(0, 0, 0, 0.15);
@@ -571,7 +680,7 @@ def render_dashboard():
        exactly -- same background, same hover darken -- instead of the
        outline treatment it had before. */
     .st-key-shuffle_hazards_btn button {
-        background-color: #477B9E !important;
+        background-color: #007DD1 !important;
         color: white !important;
         border: none !important;
         border-radius: 6px !important;
@@ -582,10 +691,10 @@ def render_dashboard():
         font-size: 13px !important;
     }
 
-    .st-key-show_analytics_btn button:hover { background-color: #3b6685 !important; }
-    .st-key-run_btn button:hover { background-color: #52a855 !important; }
-    .st-key-reset_btn button:hover { background-color: #e55c5c !important; }
-    .st-key-shuffle_hazards_btn button:hover { background-color: #3b6685 !important; }
+    .st-key-show_analytics_btn button:hover { background-color: #004674 !important; }
+    .st-key-run_btn button:hover { background-color: #0DA300 !important; }
+    .st-key-reset_btn button:hover { background-color: #B60000 !important; }
+    .st-key-shuffle_hazards_btn button:hover { background-color: #0064A7 !important; }
 
     </style>
     """, unsafe_allow_html=True)
@@ -619,7 +728,7 @@ def render_dashboard():
 
         with st.container(key="params_group"):
             st.markdown("""
-            <div class="panel-header" style="border: 1px solid #D1D5E0; border-radius: 6px 6px 0 0; border-bottom: none;">
+            <div class="panel-header" style="border: 1px solid #000000; border-radius: 6px 6px 0 0; border-bottom: none;">
                 Parameters
             </div>
             """, unsafe_allow_html=True)
@@ -708,15 +817,6 @@ def render_dashboard():
         # of the map instead of as a block element that gets pushed down.
         canvas_wrapper = st.container(key="canvas_wrapper")
         with canvas_wrapper:
-            # D/R/C heatmap toggle -- purely a display choice, doesn't touch
-            # the simulation or the Run flow at all. Only affects the static
-            # preview/result map below; the live Scout/Carrier animation
-            # keeps the normal road-type rendering regardless of this.
-            map_view_label = st.radio(
-                "Map view", list(MAP_VIEW_OPTIONS.keys()),
-                horizontal=True, key="map_view_toggle", label_visibility="collapsed",
-            )
-            map_view = MAP_VIEW_OPTIONS[map_view_label]
             canvas_slot = st.empty()  # reserved now, filled in further down
             loading_slot = st.empty()  # the "Scouts exploring..." overlay lives here
 
@@ -764,9 +864,20 @@ def render_dashboard():
                     st.session_state["hazard_seed"],
                 )
 
-                anim_fig, anim_ax, anim_base_handles = create_scout_canvas(
-                    nodes_for_anim, edges_for_anim, hazard_edges=live_hazard_edges,
-                )
+                # Interactive replay mode: run the simulation silently while a
+                # recorder notes what every Scout and Carrier did, then play it
+                # back on the Folium map. Falls back to the live matplotlib
+                # animation below if the interactive packages are missing or
+                # USE_INTERACTIVE_REPLAY is off.
+                use_replay = bool(USE_INTERACTIVE_REPLAY and INTERACTIVE_MAP_AVAILABLE and replay_map is not None)
+                recorder = replay_map.ReplayRecorder() if use_replay else None
+
+                if use_replay:
+                    anim_fig = anim_ax = anim_base_handles = None   # nothing is drawn while the run computes
+                else:
+                    anim_fig, anim_ax, anim_base_handles = create_scout_canvas(
+                        nodes_for_anim, edges_for_anim, hazard_edges=live_hazard_edges,
+                    )
                 anim_state = {"start_node": None, "target_node": None, "dynamic_artists": None}
 
                 # Live stopwatch: starts now (Scout phase kickoff) and keeps
@@ -831,9 +942,12 @@ def render_dashboard():
                 # its OWN canvas/fig, so the Scout swarm's final frame stays
                 # on screen as the last thing painted before Carriers take
                 # over, instead of the two phases fighting over one canvas.
-                carrier_fig, carrier_ax, carrier_base_handles = create_carrier_canvas(
-                    nodes_for_anim, edges_for_anim, hazard_edges=live_hazard_edges,
-                )
+                if use_replay:
+                    carrier_fig = carrier_ax = carrier_base_handles = None
+                else:
+                    carrier_fig, carrier_ax, carrier_base_handles = create_carrier_canvas(
+                        nodes_for_anim, edges_for_anim, hazard_edges=live_hazard_edges,
+                    )
                 carrier_anim_state = {"dynamic_artists": None}
 
                 # Edge-distance lookup, reused to compute each Carrier's real
@@ -903,10 +1017,60 @@ def render_dashboard():
                 # which sits inside canvas_wrapper (so it's positioned
                 # relative to the map, pinned near its bottom edge) and gets
                 # cleared once the run finishes.
-                loading_slot.markdown(
-                    '<div class="running-overlay"><span class="running-dot"></span>Scouts exploring the network...</div>',
-                    unsafe_allow_html=True,
-                )
+                if use_replay:
+                    # Keep the preview map on screen (instead of a blank
+                    # canvas) and lay a blurred loading card over it. The
+                    # recorder callbacks are wrapped so the card can show
+                    # live progress; updates are throttled so the UI isn't
+                    # rewritten on every single Scout / Carrier step.
+                    with canvas_slot.container():
+                        show_map(
+                            lambda: folium_map.build_preview_map(
+                                nodes_for_anim, edges_for_anim, (fire_x, fire_y),
+                                (start_node_x, start_node_y), hazard_edges=live_hazard_edges,
+                            ),
+                            lambda: plot_preview(
+                                nodes_for_anim, edges_for_anim, (fire_x, fire_y),
+                                (start_node_x, start_node_y), hazard_edges=live_hazard_edges,
+                            ),
+                            key="map_preview_running",
+                        )
+                    loading_slot.markdown(
+                        _loading_veil("Running simulation", "Starting up...", 0),
+                        unsafe_allow_html=True,
+                    )
+                    veil_state = {"last": 0.0}
+
+                    def _veil_update(title, sub, pct, force=False):
+                        now = time.monotonic()
+                        if force or now - veil_state["last"] >= 0.15:
+                            veil_state["last"] = now
+                            loading_slot.markdown(_loading_veil(title, sub, pct), unsafe_allow_html=True)
+
+                    def recorded_on_scout(*args, **kwargs):
+                        recorder.on_scout(*args, **kwargs)
+                        n = args[0] if args else kwargs.get("scout_number", 0)
+                        total = args[1] if len(args) > 1 else kwargs.get("num_scouts", 1)
+                        _veil_update("Scouts exploring the network",
+                                     f"Scout {n} of {total}",
+                                     80 * n / max(total, 1), force=(n == total))
+
+                    def recorded_on_carrier(*args, **kwargs):
+                        recorder.on_carrier(*args, **kwargs)
+                        n = args[1] if len(args) > 1 else kwargs.get("carrier_number", 0)
+                        total = args[2] if len(args) > 2 else kwargs.get("num_carriers", 1)
+                        _veil_update("Dispatching fire trucks",
+                                     f"Carrier {n} of {total}",
+                                     80 + 18 * n / max(total, 1))
+
+                    scout_cb, carrier_cb = recorded_on_scout, recorded_on_carrier
+                else:
+                    loading_slot.markdown(
+                        '<div class="running-overlay"><span class="running-dot"></span>'
+                        'Scouts exploring the network...</div>',
+                        unsafe_allow_html=True,
+                    )
+                    scout_cb, carrier_cb = on_scout, on_carrier
                 st.session_state["aco_results"] = run_full_simulation(
                     graph_file=GRAPH_FILE,
                     w1=w1, w2=w2, w3=w3,
@@ -918,12 +1082,20 @@ def render_dashboard():
                     enable_fire=enable_fire,
                     num_random_hazards=num_random_hazards if enable_random_hazards else 0,
                     random_hazard_seed=st.session_state["hazard_seed"],
-                    progress_callback=on_scout,
-                    carrier_progress_callback=on_carrier,
+                    progress_callback=scout_cb,
+                    carrier_progress_callback=carrier_cb,
                 )
-                plt.close(anim_fig)      # only close once the whole run is done -- we reused this fig every frame
-                plt.close(carrier_fig)   # same for the Carrier phase's own reused fig
-                loading_slot.empty()
+                if anim_fig is not None:
+                    plt.close(anim_fig)      # only close once the whole run is done -- we reused this fig every frame
+                if carrier_fig is not None:
+                    plt.close(carrier_fig)   # same for the Carrier phase's own reused fig
+                if use_replay:
+                    # Veil stays up through the replay build below and is
+                    # cleared once the replay has been placed on the canvas.
+                    loading_slot.markdown(_loading_veil("Building replay", "Almost there...", 99),
+                                          unsafe_allow_html=True)
+                else:
+                    loading_slot.empty()
 
                 # Persist the measured stopwatch time -- frozen at the first
                 # Carrier's arrival if one made it, otherwise wherever the
@@ -943,6 +1115,35 @@ def render_dashboard():
                 st.session_state["aco_results"]["dist_weight"] = w1
                 st.session_state["aco_results"]["risk_weight"] = w2
                 st.session_state["aco_results"]["complexity_weight"] = w3
+
+                # Interactive replay: turn what the recorder saw into data
+                # for the browser-side player. A replayed run's measured
+                # response time is the first fire truck to ARRIVE (the same
+                # per-edge, risk-aware travel times as the ETA metric).
+                st.session_state["replay_payload"] = None
+                if use_replay:
+                    res = st.session_state["aco_results"]
+                    res["measured_response_time_s"] = res.get("eta_seconds") or 0.0   # used unless the replay supplies the real figure
+                    if res["success"]:
+                        try:
+                            def _edge_time(u, v):
+                                info = carrier_edge_lookup.get((u, v))
+                                if not info:
+                                    return None
+                                _d, r_n, c_n = carrier_normalized.get((u, v), (0.0, 0.0, 0.0))
+                                return edge_travel_time_s(info["distance_m"], r_n, c_n)
+
+                            payload = replay_map.build_replay_payload(
+                                recorder, res, _edge_time,
+                                fire_rate_mps=(spread_rate_m_per_min / 60) if enable_fire else 0.0,
+                            )
+                            ends = [c["delay"] + c["t"][-1] for c in payload["carriers"]]
+                            first = payload["firstArrival"]
+                            res["measured_response_time_s"] = first["t"] if first else (max(ends) if ends else res["measured_response_time_s"])
+                            st.session_state["replay_payload"] = payload
+                            st.session_state["replay_autoplay"] = True
+                        except Exception as exc:
+                            st.warning(f"Replay unavailable ({type(exc).__name__}: {exc}) -- showing the final map instead.")
 
         results = st.session_state.get("aco_results")
         # A result is "current" only if the sliders still match the position
@@ -966,27 +1167,11 @@ def render_dashboard():
             render_timer(timer_slot)
 
         with canvas_slot.container():
-            if map_view is not None:
-                nodes, edges = load_graph_for_preview(GRAPH_FILE)
-                preview_hazard_edges = compute_preview_hazards(
-                    fire_x, fire_y,
-                    num_random_hazards if enable_random_hazards else 0,
-                    st.session_state["hazard_seed"],
+            if result_matches_sliders and results["success"] and st.session_state.get("replay_payload"):
+                show_replay(
+                    st.session_state["replay_payload"], results,
+                    autoplay=st.session_state.pop("replay_autoplay", False),
                 )
-                show_map(
-                    lambda: folium_map.build_attribute_heatmap_map(
-                        nodes, edges, map_view,
-                        fire_xy=(fire_x, fire_y), start_xy=(start_node_x, start_node_y),
-                        hazard_edges=preview_hazard_edges,
-                    ),
-                    lambda: plot_attribute_heatmap(
-                        nodes, edges, map_view,
-                        fire_xy=(fire_x, fire_y), start_xy=(start_node_x, start_node_y),
-                        hazard_edges=preview_hazard_edges,
-                    ),
-                    key=f"map_heat_{map_view}",
-                )
-                st.caption(f"Showing {map_view_label} per edge -- the same raw values the routing algorithm uses internally.")
             elif result_matches_sliders and results["success"]:
                 show_map(
                     lambda: folium_map.build_route_map(results),
@@ -1015,6 +1200,7 @@ def render_dashboard():
                     st.caption("Sliders have moved since the last run -- click Run to simulate at this new position.")
                 elif results is not None and not results["success"]:
                     st.warning("No route found last run -- try raising Scout Agents, or click Run again.")
+        loading_slot.empty()   # drop the loading veil now that the final map/replay is placed
 
 
     # ==========================
